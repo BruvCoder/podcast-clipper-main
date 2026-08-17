@@ -1,0 +1,13 @@
+node_modules
+jobs
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+firebase-service-account.json
+*service-account*.json
+*service_account*.json
+test

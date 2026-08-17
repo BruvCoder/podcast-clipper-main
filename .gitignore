@@ -1,0 +1,23 @@
+# Dependencies and build output
+**/node_modules/
+**/dist/
+
+# Local environment files (keep sanitized templates)
+**/.env
+**/.env.*
+!**/.env.example
+**/.envrc
+
+# Private keys and service-account credentials
+**/*service-account*.json
+**/*service_account*.json
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+
+# Runtime output and local clutter
+backend/jobs/*
+!backend/jobs/.gitkeep
+*.log
+.DS_Store

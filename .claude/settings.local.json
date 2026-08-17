@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s -o /dev/null -w \"backend: %{http_code}\\\\n\" http://localhost:8787/)",
+      "Bash(curl -s -o /dev/null -w \"frontend: %{http_code}\\\\n\" http://localhost:5173/)",
+      "Bash(node -e ' *)",
+      "Bash(node --check src/server.js)",
+      "Bash(node --check src/lib/rapidapi.js)",
+      "Bash(node --check src/lib/ffmpeg.js)",
+      "Bash(npm install *)",
+      "mcp__railway__list-workspaces",
+      "mcp__railway__whoami",
+      "Bash(gh --version)",
+      "Bash(gh auth *)",
+      "Bash(railway --version)"
+    ]
+  }
+}

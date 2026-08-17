@@ -1,0 +1,16 @@
+node_modules/
+
+.env
+.env.*
+!.env.example
+
+jobs/*
+!jobs/.gitkeep
+
+firebase-service-account.json
+*service-account*.json
+*service_account*.json
+*.pem
+*.key
+*.p12
+*.pfx
