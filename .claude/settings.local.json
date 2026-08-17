@@ -12,7 +12,8 @@
       "mcp__railway__whoami",
       "Bash(gh --version)",
       "Bash(gh auth *)",
-      "Bash(railway --version)"
+      "Bash(railway --version)",
+      "Bash(git *)"
     ]
   }
 }
