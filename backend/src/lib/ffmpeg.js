@@ -2,6 +2,12 @@ import { spawn } from "child_process";
 import fs from "fs";
 import path from "path";
 
+// ffmpeg/libx264 auto-detect thread count from the host's reported CPU count,
+// which in a container can be the physical host's full core count rather
+// than the container's actual cgroup-limited share — leading to wildly
+// over-threaded encodes that spike memory and get OOM-killed. Cap explicitly.
+const FFMPEG_THREADS = process.env.FFMPEG_THREADS || "2";
+
 function run(cmd, args) {
   return new Promise((resolve, reject) => {
     const proc = spawn(cmd, args);
@@ -67,6 +73,8 @@ export async function createClip(
     "veryfast",
     "-crf",
     "20",
+    "-threads",
+    FFMPEG_THREADS,
     "-c:a",
     "aac",
     "-b:a",

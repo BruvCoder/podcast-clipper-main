@@ -964,7 +964,21 @@ export async function downloadVideo(youtubeUrl, jobDir, onProgress, onAudioReady
 
             const videoCodecArgs = canCopyVideo
               ? ["-c:v", "copy"]
-              : ["-c:v", "libx264", "-preset", "veryfast", "-crf", "22", "-pix_fmt", "yuv420p"];
+              : [
+                  "-c:v",
+                  "libx264",
+                  "-preset",
+                  "veryfast",
+                  "-crf",
+                  "22",
+                  "-pix_fmt",
+                  "yuv420p",
+                  // See ffmpeg.js: libx264's auto thread-count detection can read
+                  // a container host's full core count instead of its cgroup
+                  // limit, over-threading into an OOM. Cap explicitly.
+                  "-threads",
+                  process.env.FFMPEG_THREADS || "2",
+                ];
             await runFfmpeg(
               [
                 "-y",
