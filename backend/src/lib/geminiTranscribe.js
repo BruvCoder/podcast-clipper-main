@@ -189,26 +189,35 @@ function findRegressionIndex(words) {
 }
 
 // Separately from backward jumps, Gemini's self-reported per-word timing
-// doesn't reliably calibrate to the clip's true wall-clock length — observed
-// directly: a verified-exactly-20.000s chunk came back with its last word
-// ending at 30.13s (~50% over), while staying perfectly internally
-// monotonic the whole time, so the regression check above can't catch it.
+// doesn't reliably calibrate to the clip's true wall-clock length. Two
+// distinct failure modes observed:
+//  - End-scaling: a verified-exactly-20.000s chunk came back with its last
+//    word ending at 30.13s (~50% over) while staying perfectly internally
+//    monotonic — the regression check above can't catch this.
+//  - Leading offset: the *first* reported word isn't at true time zero
+//    either, so scaling from a fixed zero anchor leaves a roughly constant
+//    residual gap throughout the whole chunk instead of correcting it.
 // Since we know each chunk's true duration exactly (we cut it ourselves),
-// ALWAYS rescale the reported timestamps to fit it — even a few percent of
-// drift adds up to many real seconds over a multi-minute chunk (5% of a
-// 360s chunk is 18s of unnoticed slop, which is exactly what let a subtler
-// case of this same bug through the first version of this fix). Rescaling
-// is a no-op on an already-accurate response, so there's no downside to
-// applying it unconditionally.
+// always apply a 2-point affine correction — mapping [firstReportedStart,
+// lastReportedEnd] onto [0, trueDurationSec] — which fixes both at once.
+// This is a no-op on an already-accurate response, so there's no downside
+// to applying it unconditionally.
 function reportedMaxEnd(words) {
   return words.length ? Math.max(...words.map((w) => w.end)) : 0;
 }
 
 function rescaleToFitDuration(words, trueDurationSec) {
-  const maxEnd = reportedMaxEnd(words);
-  if (maxEnd <= 0) return words;
-  const scale = trueDurationSec / maxEnd;
-  return words.map((w) => ({ ...w, start: w.start * scale, end: w.end * scale }));
+  if (!words.length) return words;
+  const reportedMin = Math.min(...words.map((w) => w.start));
+  const reportedMax = Math.max(...words.map((w) => w.end));
+  const span = reportedMax - reportedMin;
+  if (span <= 0) return words;
+  const scale = trueDurationSec / span;
+  return words.map((w) => ({
+    ...w,
+    start: (w.start - reportedMin) * scale,
+    end: (w.end - reportedMin) * scale,
+  }));
 }
 
 // If the reported span is wildly off from the true duration (not just
