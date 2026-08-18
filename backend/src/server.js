@@ -10,7 +10,7 @@ import { randomUUID } from "crypto";
 import { prepareSources, getVideoInfo } from "./lib/rapidapi.js";
 import { createClip, ensureDir } from "./lib/ffmpeg.js";
 import { transcribeAudio } from "./lib/groqTranscribe.js";
-import { pickClips } from "./lib/gemini.js";
+import { pickClips } from "./lib/clipPicker.js";
 import { groupWordsIntoPhrases, phrasesToPromptText } from "./lib/transcript.js";
 import { requireAuth } from "./lib/firebaseAdmin.js";
 
@@ -193,7 +193,7 @@ async function runPipeline(id, jobDir, { youtubeUrl, numClips, clipLengthSec, su
   const videoDurationSec = info.durationSec || durationSec || words[words.length - 1].end;
   const phrases = groupWordsIntoPhrases(words);
 
-  updateJob(id, { stage: "Selecting and ranking best moments with Gemini" });
+  updateJob(id, { stage: "Selecting and ranking best moments" });
   const rawPicks = await pickClips(phrasesToPromptText(phrases), {
     numClips,
     clipLengthSec,
@@ -207,8 +207,8 @@ async function runPipeline(id, jobDir, { youtubeUrl, numClips, clipLengthSec, su
   if (!picks.length) {
     throw new Error(
       rawPicks.length
-        ? `Gemini's clip picks were all shorter than ${MIN_CLIP_SEC}s — likely a transcription timing issue. Please try again.`
-        : "Gemini did not return any clip picks."
+        ? `Every clip pick was shorter than ${MIN_CLIP_SEC}s — likely a transcription timing issue. Please try again.`
+        : "Clip selection did not return any picks."
     );
   }
 

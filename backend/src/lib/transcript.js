@@ -1,10 +1,10 @@
 /**
- * Groups word-level {word, start, end} timestamps (from Gemini's transcription) into
+ * Groups word-level {word, start, end} timestamps (from Whisper) into
  * readable phrase-like chunks, similar to how a human would break a
  * transcript into subtitle lines: break on a natural pause, a sentence
  * ending, or once a chunk gets too long/long-running.
  *
- * Used both to build the transcript we hand to Gemini for clip selection,
+ * Used both to build the transcript we hand to the clip picker,
  * and the per-clip "scene analysis" transcript shown in the UI.
  */
 export function groupWordsIntoPhrases(

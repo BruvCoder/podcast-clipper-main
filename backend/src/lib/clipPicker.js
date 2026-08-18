@@ -1,21 +1,7 @@
-import { GoogleGenAI } from "@google/genai";
-import { withGeminiRetry } from "./geminiRetry.js";
+import { groqPostWithRetry } from "./groqClient.js";
 
-let client = null;
-function getClient() {
-  if (!client) {
-    if (!process.env.GEMINI_API_KEY) {
-      throw new Error("GEMINI_API_KEY is not set. Copy backend/.env.example to backend/.env and fill it in.");
-    }
-    client = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-  }
-  return client;
-}
-
-const MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
-// Without this, a stalled request hangs forever with no error and nothing
-// in the logs, instead of failing and being retried.
-const TIMEOUT_MS = Number.parseInt(process.env.GEMINI_TIMEOUT_MS, 10) || 60_000;
+const MODEL = process.env.CLIP_PICKER_MODEL || "openai/gpt-oss-120b";
+const TIMEOUT_MS = Number.parseInt(process.env.CLIP_PICKER_TIMEOUT_MS, 10) || 120_000;
 
 const CLIP_PICK_SCHEMA = {
   type: "object",
@@ -25,24 +11,39 @@ const CLIP_PICK_SCHEMA = {
       items: {
         type: "object",
         properties: {
-          start: { type: "number", description: "Clip start time in seconds. Must exactly match the start timestamp of a line in the transcript." },
-          end: { type: "number", description: "Clip end time in seconds. Must exactly match the end timestamp of a line in the transcript." },
+          start: {
+            type: "number",
+            description:
+              "Clip start time in seconds. Must exactly match the start timestamp of a line in the transcript.",
+          },
+          end: {
+            type: "number",
+            description:
+              "Clip end time in seconds. Must exactly match the end timestamp of a line in the transcript.",
+          },
           title: { type: "string", description: "A short, punchy, clickable title for this clip (under 60 chars)." },
-          hook: { type: "string", description: "The exact opening line or moment (quoted or closely paraphrased) that makes the first 2 seconds grab attention." },
+          hook: {
+            type: "string",
+            description:
+              "The exact opening line or moment (quoted or closely paraphrased) that makes the first 2 seconds grab attention.",
+          },
           viralityScore: {
             type: "number",
             description: "Predicted viral/engagement potential from 0-100, relative to the other clips chosen.",
           },
           reason: {
             type: "string",
-            description: "One or two sentences on why this moment was chosen (hook, emotion, payoff, controversy, humor, insight, etc).",
+            description:
+              "One or two sentences on why this moment was chosen (hook, emotion, payoff, controversy, humor, insight, etc).",
           },
         },
         required: ["start", "end", "title", "hook", "viralityScore", "reason"],
+        additionalProperties: false,
       },
     },
   },
   required: ["clips"],
+  additionalProperties: false,
 };
 
 const SYSTEM_INSTRUCTION = `You are an expert short-form video producer for a channel that re-cuts clips out \
@@ -111,13 +112,11 @@ inflating it to fill the requested count.
 Respond only with JSON matching the provided schema.`;
 
 /**
- * Given a full timestamped transcript (phrase-level segments from Gemini's own transcription),
- * asks Gemini to pick the best `numClips` non-overlapping moments (each
- * close to `clipLengthSec` seconds) and score them for predicted view potential.
+ * Given a full timestamped transcript (phrase-level segments from Whisper),
+ * picks the best `numClips` non-overlapping moments (each close to
+ * `clipLengthSec` seconds) and scores them for predicted view potential.
  */
 export async function pickClips(transcriptText, { numClips, clipLengthSec, videoDurationSec }) {
-  const ai = getClient();
-
   const prompt = `Video duration: ~${Math.round(videoDurationSec)} seconds.
 
 Pick exactly ${numClips} distinct, non-overlapping clips, each close to ${clipLengthSec} seconds long \
@@ -128,22 +127,34 @@ ${transcriptText}
 
 Respond only with JSON matching the schema.`;
 
-  const response = await withGeminiRetry(
-    () =>
-      ai.models.generateContent({
+  const data = await groqPostWithRetry(
+    "/chat/completions",
+    async () =>
+      JSON.stringify({
         model: MODEL,
-        contents: prompt,
-        config: {
-          systemInstruction: SYSTEM_INSTRUCTION,
-          responseMimeType: "application/json",
-          responseSchema: CLIP_PICK_SCHEMA,
-          httpOptions: { timeout: TIMEOUT_MS },
-        },
+        messages: [
+          { role: "system", content: SYSTEM_INSTRUCTION },
+          { role: "user", content: prompt },
+        ],
+        response_format: { type: "json_schema", json_schema: { name: "clips", schema: CLIP_PICK_SCHEMA } },
+        temperature: 0.7,
       }),
-    { label: "Gemini clip selection" }
+    {
+      timeoutMs: TIMEOUT_MS,
+      extraHeaders: { "Content-Type": "application/json" },
+      label: "Clip selection",
+    }
   );
 
-  const parsed = JSON.parse(response.text);
-  const clips = (parsed.clips || []).sort((a, b) => b.viralityScore - a.viralityScore);
-  return clips;
+  const content = data?.choices?.[0]?.message?.content;
+  if (!content) throw new Error("Clip selection returned an empty response.");
+
+  let parsed;
+  try {
+    parsed = JSON.parse(content);
+  } catch (err) {
+    throw new Error(`Clip selection returned invalid JSON: ${err.message}`, { cause: err });
+  }
+
+  return (parsed.clips || []).sort((a, b) => b.viralityScore - a.viralityScore);
 }

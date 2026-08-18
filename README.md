@@ -10,7 +10,7 @@ Podcast Clipper turns a public YouTube podcast into ranked, subtitled vertical c
 2. Authenticated API requests include a Firebase ID token. The backend verifies the token with Firebase Admin and keeps each user's jobs separate.
 3. The backend uses two RapidAPI providers: it downloads the audio track in full, and validates (but does not download) a video-only stream URL.
 4. Whisper large-v3 (hosted on Groq) transcribes the local audio track, producing word-level timestamps derived from acoustic alignment against the audio.
-5. Gemini receives the timestamped transcript and selects, titles, and ranks the best moments.
+5. A text model on Groq receives the timestamped transcript and selects, titles, and ranks the best moments.
 6. For each selected moment, FFmpeg seeks directly into the remote video URL for just that time window, reframes it to 9:16, and burns in timed subtitles — the full source video is never downloaded or stored. The browser polls the job and displays the resulting clips.
 
 The active downloader does not require `yt-dlp`.
@@ -22,8 +22,7 @@ The active downloader does not require `yt-dlp`.
 - A **RapidAPI key** subscribed to both providers used by the backend:
   - Cloud API Hub - YouTube Downloader (`cloud-api-hub-youtube-downloader.p.rapidapi.com`)
   - YouTube MP3 (`youtube-mp36.p.rapidapi.com`)
-- A **Gemini API key** from [Google AI Studio](https://aistudio.google.com/apikey), used to select and rank clip moments.
-- A **Groq API key** from [Groq Console](https://console.groq.com/keys), used to transcribe audio with Whisper.
+- A **Groq API key** from [Groq Console](https://console.groq.com/keys). One key covers both transcription (Whisper) and clip selection.
 - A **Firebase project** with a Web app, Firebase Authentication, and a Firebase Admin service account.
 
 Confirm the local tools before installing dependencies:
@@ -32,7 +31,6 @@ Confirm the local tools before installing dependencies:
 node --version
 ffmpeg -version
 ffprobe -version
-python3 --version
 ```
 
 ## 1. Configure Firebase
@@ -90,7 +88,6 @@ From the repository root:
 ```bash
 cd backend
 npm ci
-python3 -m pip install -r requirements.txt
 cp .env.example .env
 ```
 
@@ -98,7 +95,6 @@ Edit `backend/.env` and set:
 
 ```dotenv
 RAPIDAPI_KEY=your_rapidapi_key_here
-GEMINI_API_KEY=your_gemini_api_key_here
 GROQ_API_KEY=your_groq_api_key_here
 FIREBASE_SERVICE_ACCOUNT_PATH=./firebase-service-account.json
 ```
@@ -107,7 +103,7 @@ The remaining values have local defaults:
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
-| `GEMINI_MODEL` | Model used to select and rank clip moments | `gemini-3.6-flash` |
+| `CLIP_PICKER_MODEL` | Model used to select and rank clip moments | `openai/gpt-oss-120b` |
 | `GROQ_TRANSCRIBE_MODEL` | Whisper model used to transcribe audio | `whisper-large-v3` |
 | `PORT` | Backend HTTP port | `8787` |
 | `TRANSCRIBE_CHUNK_SEC` | Seconds of audio per transcription request; sized for the API's file-size limit, not timing accuracy | `600` |
@@ -150,7 +146,7 @@ npm run dev
 
 Open `http://localhost:5173`. Vite proxies `/api` and `/files` to the backend during local development.
 
-Sign in with Google or create an email/password account, paste a supported public YouTube URL, select the clip options, and submit the job. Downloading, local transcription, and video rendering can take several minutes for long sources.
+Sign in with Google or create an email/password account, paste a supported public YouTube URL, select the clip options, and submit the job. Downloading, transcription, and video rendering can take several minutes for long sources.
 
 ## Tests and build checks
 
@@ -180,17 +176,17 @@ npm run build
 - Never commit `.env` files, Firebase Admin service-account JSON, private keys, or provider credentials. The included templates contain placeholders only. Rotate any credential that is exposed.
 - The authenticated `/api/jobs` routes verify Firebase ID tokens and restrict job metadata by Firebase user ID. Rendered `/files/<job>/clips/<clip>.mp4` URLs are intentionally shareable without authentication, but backend working files are not served. Anyone who obtains a clip URL can still fetch that rendered clip.
 - CORS is currently open and there is no rate limiting, quota enforcement, or production hardening. Do not expose this backend directly to the public internet as-is.
-- Job metadata lives in an in-memory `Map`. Restarting the backend removes job history and status, and multiple backend instances do not share state.
+- Job metadata is cached in memory and persisted to a `job.json` file per job directory, so history survives a restart. Multiple backend instances still do not share state, and history is only as durable as the volume holding `backend/jobs/`.
 - Source media, extracted audio, and rendered clips are written under `backend/jobs/`. Files remain on that machine until removed, have no automatic retention policy, and are unsuitable for ephemeral or multi-instance hosting.
 - Firebase Authentication does not make file storage private. A production version should move job state to a database, store media in private object storage, authorize every download, and add cleanup/retention jobs.
-- RapidAPI receives the YouTube video ID and its providers supply the media streams. Groq receives the audio for transcription, and Gemini receives the resulting timestamped transcript for clip selection. FFmpeg processing runs locally on the backend.
+- RapidAPI receives the YouTube video ID and its providers supply the media streams. Groq receives the audio for transcription and the resulting timestamped transcript for clip selection. FFmpeg processing runs locally on the backend.
 - Only process media you are authorized to download and reuse. You are responsible for complying with YouTube's terms, copyright law, and the terms and quotas of all configured API providers.
 
 ## Current product limitations
 
 - The vertical reframe uses a center crop or padded layout; it does not track faces or active speakers.
-- The virality score is Gemini's relative judgment across the returned clips, not a trained prediction or guarantee of performance.
-- Processing is CPU-, memory-, disk-, and network-intensive. Long videos substantially increase runtime, and transcription cost/time scales with episode length since it's billed per Gemini API call.
+- The virality score is the clip-selection model's relative judgment across the returned clips, not a trained prediction or guarantee of performance.
+- Processing is CPU-, memory-, disk-, and network-intensive. Long videos substantially increase runtime, and transcription cost/time scales with episode length since it's billed per API call.
 - The pipeline targets public YouTube video URL formats supported by its URL parser and external providers; private, restricted, unavailable, or provider-blocked videos will fail.
 
 ## Project structure
