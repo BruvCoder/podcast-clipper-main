@@ -13,6 +13,9 @@ function getClient() {
 }
 
 const MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
+// See geminiTranscribe.js — without this, a stalled request hangs forever
+// with no error and nothing in the logs, instead of failing and retrying.
+const TIMEOUT_MS = Number.parseInt(process.env.GEMINI_TIMEOUT_MS, 10) || 60_000;
 
 const CLIP_PICK_SCHEMA = {
   type: "object",
@@ -134,6 +137,7 @@ Respond only with JSON matching the schema.`;
           systemInstruction: SYSTEM_INSTRUCTION,
           responseMimeType: "application/json",
           responseSchema: CLIP_PICK_SCHEMA,
+          httpOptions: { timeout: TIMEOUT_MS },
         },
       }),
     { label: "Gemini clip selection" }

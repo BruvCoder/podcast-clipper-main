@@ -16,7 +16,10 @@ function getClient() {
   return client;
 }
 
-const MODEL = process.env.GEMINI_TRANSCRIBE_MODEL || process.env.GEMINI_MODEL || "gemini-3.6-flash";
+// Transcription is a high-volume, mechanical task (many chunks per episode),
+// so it defaults to a distinct low-latency model rather than reusing
+// GEMINI_MODEL (which stays tuned for clip-selection's reasoning instead).
+const MODEL = process.env.GEMINI_TRANSCRIBE_MODEL || "gemini-3.5-flash-lite";
 
 // Long episodes are split into chunks before transcription: it keeps each
 // request's audio (base64-inlined) and JSON response comfortably small, and
@@ -24,6 +27,10 @@ const MODEL = process.env.GEMINI_TRANSCRIBE_MODEL || process.env.GEMINI_MODEL ||
 // word-accurate timing across a full hour in one pass.
 const CHUNK_SEC = positiveInteger(process.env.TRANSCRIBE_CHUNK_SEC, 360);
 const TRANSCRIBE_CONCURRENCY = positiveInteger(process.env.TRANSCRIBE_CONCURRENCY, 3);
+// Without an explicit timeout, a stalled request just hangs indefinitely —
+// no error, no retry, the job sits on "Transcribing" forever. Cap it so a
+// stuck request fails and gets picked up by withGeminiRetry instead.
+const TRANSCRIBE_TIMEOUT_MS = positiveInteger(process.env.GEMINI_TRANSCRIBE_TIMEOUT_MS, 120_000);
 
 function positiveInteger(value, fallback) {
   const parsed = Number.parseInt(value, 10);
@@ -140,6 +147,7 @@ async function transcribeChunk(chunkPath) {
           systemInstruction: SYSTEM_INSTRUCTION,
           responseMimeType: "application/json",
           responseSchema: WORDS_SCHEMA,
+          httpOptions: { timeout: TRANSCRIBE_TIMEOUT_MS },
         },
       }),
     { label: "Gemini transcription chunk" }

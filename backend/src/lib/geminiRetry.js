@@ -1,8 +1,11 @@
 // Gemini occasionally returns a transient 503 ("high demand")/429 (rate
-// limit) that has nothing to do with the request itself — retrying after a
-// short backoff usually succeeds. Without this, a single blip fails the
-// whole job outright (and for transcription, one bad chunk out of many).
-const RETRYABLE_PATTERN = /\b(503|429|UNAVAILABLE|RESOURCE_EXHAUSTED|overloaded|high demand|rate limit)\b/i;
+// limit) that has nothing to do with the request itself, or a request just
+// stalls until our own httpOptions.timeout cuts it off — retrying after a
+// short backoff usually succeeds either way. Without this, a single blip
+// fails the whole job outright (and for transcription, one bad chunk out of
+// many).
+const RETRYABLE_PATTERN =
+  /\b(503|429|UNAVAILABLE|RESOURCE_EXHAUSTED|overloaded|high demand|rate limit|timeout|timed out|deadline|aborted|ETIMEDOUT|ECONNRESET|ECONNREFUSED)\b/i;
 
 function isRetryableGeminiError(err) {
   const status = err?.status ?? err?.code;
