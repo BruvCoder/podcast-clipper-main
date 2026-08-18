@@ -1,6 +1,7 @@
 import { spawn } from "child_process";
 import fs from "fs";
 import path from "path";
+import { buildFfmpegHeaderString } from "./rapidapi.js";
 
 // ffmpeg/libx264 auto-detect thread count from the host's reported CPU count,
 // which in a container can be the physical host's full core count rather
@@ -8,24 +9,55 @@ import path from "path";
 // over-threaded encodes that spike memory and get OOM-killed. Cap explicitly.
 const FFMPEG_THREADS = process.env.FFMPEG_THREADS || "2";
 
+// Each render now reads its video input directly from a remote URL (see
+// createClip below), so unlike a purely-local ffmpeg pass this can hang on
+// a stalled network read. Bound it well below the job's overall timeouts —
+// a single short clip has no legitimate reason to take this long.
+const FFMPEG_RENDER_TIMEOUT_MS =
+  Number.parseInt(process.env.FFMPEG_RENDER_TIMEOUT_MS, 10) || 5 * 60_000;
+
 function run(cmd, args) {
   return new Promise((resolve, reject) => {
     const proc = spawn(cmd, args);
     let stderr = "";
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      proc.kill("SIGKILL");
+    }, FFMPEG_RENDER_TIMEOUT_MS);
+    timer.unref?.();
+
     proc.stderr.on("data", (d) => (stderr += d.toString()));
-    proc.on("error", (err) =>
-      reject(new Error(`Failed to start ${cmd}. Is it installed? (${err.message})`))
-    );
+    proc.on("error", (err) => {
+      clearTimeout(timer);
+      reject(new Error(`Failed to start ${cmd}. Is it installed? (${err.message})`));
+    });
     proc.on("close", (code) => {
-      if (code !== 0) reject(new Error(`${cmd} exited with ${code}: ${stderr.slice(-2000)}`));
-      else resolve();
+      clearTimeout(timer);
+      if (timedOut) {
+        reject(new Error(`${cmd} timed out after ${Math.round(FFMPEG_RENDER_TIMEOUT_MS / 1000)}s`));
+      } else if (code !== 0) {
+        reject(new Error(`${cmd} exited with ${code}: ${stderr.slice(-2000)}`));
+      } else {
+        resolve();
+      }
     });
   });
 }
 
-/** Cuts a segment [startSec, endSec) from the source video, reframes to 9:16, and burns in styled ASS subtitles — all in a single ffmpeg pass. */
+/**
+ * Cuts a segment [startSec, endSec) from the source, reframes to 9:16, and
+ * burns in styled ASS subtitles — all in a single ffmpeg pass.
+ *
+ * The video comes straight from a remote URL (ffmpeg seeks to startSec and
+ * only reads that window over the network — the full source video is never
+ * downloaded), while the audio comes from the local track already fetched
+ * for transcription. `videoSource` is `{ url, headers }` from
+ * `rapidapi.js`'s `prepareSources`.
+ */
 export async function createClip(
-  videoPath,
+  videoSource,
+  audioPath,
   words,
   startSec,
   endSec,
@@ -57,14 +89,38 @@ export async function createClip(
     throw new Error(`Unknown cropMode: ${cropMode} (expected "pad" or "crop")`);
   }
 
-  await run("ffmpeg", [
-    "-y",
+  const videoInputArgs = [];
+  if (videoSource.headers && Object.keys(videoSource.headers).length) {
+    videoInputArgs.push("-headers", buildFfmpegHeaderString(videoSource.headers));
+  }
+  videoInputArgs.push(
+    // Auto-retry a dropped/stalled connection instead of failing the whole
+    // render over a transient network hiccup.
+    "-reconnect",
+    "1",
+    "-reconnect_streamed",
+    "1",
+    "-reconnect_delay_max",
+    "5",
     "-ss",
     String(startSec),
     "-i",
-    videoPath,
+    videoSource.url
+  );
+
+  await run("ffmpeg", [
+    "-y",
+    ...videoInputArgs,
+    "-ss",
+    String(startSec),
+    "-i",
+    audioPath,
     "-t",
     String(duration),
+    "-map",
+    "0:v:0",
+    "-map",
+    "1:a:0",
     "-vf",
     vf,
     "-c:v",

@@ -8,10 +8,10 @@ Podcast Clipper turns a public YouTube podcast into ranked, subtitled vertical c
 
 1. The frontend signs users in with Google or email/password through Firebase Authentication.
 2. Authenticated API requests include a Firebase ID token. The backend verifies the token with Firebase Admin and keeps each user's jobs separate.
-3. The backend uses two RapidAPI providers to fetch a video-only stream and an audio track, then uses FFmpeg to combine them into an H.264/AAC MP4.
-4. FFmpeg extracts audio, and `faster-whisper` transcribes it locally with word-level timestamps.
+3. The backend uses two RapidAPI providers: it downloads the audio track in full, and validates (but does not download) a video-only stream URL.
+4. `faster-whisper` transcribes the local audio track with word-level timestamps.
 5. Gemini receives the timestamped transcript and selects, titles, and ranks the best moments.
-6. FFmpeg reframes each moment to 9:16 and burns in timed subtitles. The browser polls the job and displays the resulting clips.
+6. For each selected moment, FFmpeg seeks directly into the remote video URL for just that time window, reframes it to 9:16, and burns in timed subtitles — the full source video is never downloaded or stored. The browser polls the job and displays the resulting clips.
 
 The active downloader does not require `yt-dlp`.
 
@@ -203,8 +203,8 @@ backend/
     server.js              # authenticated API and job orchestration
     lib/
       firebaseAdmin.js     # Firebase ID-token verification
-      rapidapi.js          # video/audio download and muxing
-      ffmpeg.js            # extraction, reframing, and subtitle rendering
+      rapidapi.js          # audio download and remote video-source selection
+      ffmpeg.js            # per-clip remote-seek rendering, reframing, and subtitle burn-in
       gemini.js            # clip selection and ranking
   jobs/                    # local per-job media and output (gitignored)
 frontend/

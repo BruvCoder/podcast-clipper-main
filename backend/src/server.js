@@ -7,7 +7,7 @@ import os from "os";
 import { fileURLToPath } from "url";
 import { randomUUID } from "crypto";
 
-import { downloadVideo, getVideoInfo } from "./lib/rapidapi.js";
+import { prepareSources, getVideoInfo } from "./lib/rapidapi.js";
 import { createClip, ensureDir } from "./lib/ffmpeg.js";
 import { transcribeAudio } from "./lib/whisper.js";
 import { pickClips } from "./lib/gemini.js";
@@ -21,7 +21,7 @@ ensureDir(JOBS_DIR);
 // Node terminates the whole process on an unhandled promise rejection by
 // default — meaning one bad rejection anywhere would take down every other
 // in-flight job, not just the one that caused it. This is a backstop, not a
-// substitute for handling errors at the source (see selectionPromise below).
+// substitute for handling errors at the source.
 process.on("unhandledRejection", (err) => {
   console.error("Unhandled promise rejection:", err);
 });
@@ -171,58 +171,34 @@ async function runPipeline(id, jobDir, { youtubeUrl, numClips, clipLengthSec, su
   updateJob(id, { status: "running", stage: "Fetching video info" });
   const info = await getVideoInfo(youtubeUrl);
 
-  // The audio-only track downloads much faster than the full video, so as
-  // soon as it's ready (see onAudioReady below) transcription and Gemini
-  // clip selection run in the background while the video keeps downloading,
-  // instead of waiting for the video before starting either.
-  let selectionPromise = null;
-  function onAudioReady(audioPath) {
-    selectionPromise = (async () => {
-      // Real word-level timestamps from Whisper, used both for tight
-      // subtitle sync and (grouped into phrases below) for the clip-selection prompt.
-      updateJob(id, { stage: "Transcribing with Whisper (in parallel with video download)" });
-      const words = await transcribeAudio(audioPath);
-      if (!words.length) throw new Error("Transcription returned no words.");
-
-      const videoDurationSec = info.durationSec || words[words.length - 1].end;
-      const phrases = groupWordsIntoPhrases(words);
-
-      updateJob(id, {
-        stage: "Selecting and ranking best moments with Gemini (in parallel with video download)",
-      });
-      const picks = await pickClips(phrasesToPromptText(phrases), {
-        numClips,
-        clipLengthSec,
-        videoDurationSec,
-      });
-      if (!picks.length) throw new Error("Gemini did not return any clip picks.");
-
-      return { words, phrases, picks };
-    })();
-
-    // selectionPromise isn't awaited until after downloadVideo() resolves,
-    // which can be much later — if it rejects before then, Node treats it as
-    // an unhandled rejection and crashes the whole process (taking every
-    // in-flight job down with it), not just this one. Attaching a no-op
-    // handler now marks it "handled" without changing what the real
-    // `await selectionPromise` below actually receives.
-    selectionPromise.catch(() => {});
-  }
-
-  updateJob(id, { stage: "Downloading video" });
-  const videoPath = await downloadVideo(
+  // Only the (small, fast) audio track gets downloaded here — the video is
+  // validated but never fetched in full; each clip render seeks directly
+  // into its remote URL for just its own time window later.
+  const { audioPath, videoUrl, videoHeaders, durationSec } = await prepareSources(
     youtubeUrl,
     jobDir,
     (line) => {
-      const stage = typeof line === "string" && line.trim() ? line.trim().slice(0, 160) : "Downloading video";
+      const stage = typeof line === "string" && line.trim() ? line.trim().slice(0, 160) : "Preparing sources";
       updateJob(id, { stage });
-    },
-    onAudioReady
+    }
   );
 
-  // downloadVideo() cannot succeed without a validated audio track, so
-  // onAudioReady is always called before this point on a successful download.
-  const { words, phrases, picks } = await selectionPromise;
+  // Real word-level timestamps from Whisper, used both for tight subtitle
+  // sync and (grouped into phrases below) for the clip-selection prompt.
+  updateJob(id, { stage: "Transcribing with Whisper" });
+  const words = await transcribeAudio(audioPath);
+  if (!words.length) throw new Error("Transcription returned no words.");
+
+  const videoDurationSec = info.durationSec || durationSec || words[words.length - 1].end;
+  const phrases = groupWordsIntoPhrases(words);
+
+  updateJob(id, { stage: "Selecting and ranking best moments with Gemini" });
+  const picks = await pickClips(phrasesToPromptText(phrases), {
+    numClips,
+    clipLengthSec,
+    videoDurationSec,
+  });
+  if (!picks.length) throw new Error("Gemini did not return any clip picks.");
 
   const clipsOut = [];
   const clipsDir = ensureDir(path.join(jobDir, "clips"));
@@ -237,8 +213,10 @@ async function runPipeline(id, jobDir, { youtubeUrl, numClips, clipLengthSec, su
     const finalPath = path.join(clipsDir, `clip_${i + 1}.mp4`);
 
     // Reframes to 9:16 and burns in punchy word-chunk captions (real Whisper
-    // word timing) in one ffmpeg pass.
-    await createClip(videoPath, words, pick.start, pick.end, finalPath, {
+    // word timing) in one ffmpeg pass. Video is fetched directly from
+    // videoUrl for just this clip's window; audio is the local track
+    // already downloaded for transcription.
+    await createClip({ url: videoUrl, headers: videoHeaders }, audioPath, words, pick.start, pick.end, finalPath, {
       cropMode,
       subtitleColor,
     });

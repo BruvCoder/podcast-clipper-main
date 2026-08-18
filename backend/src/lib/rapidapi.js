@@ -8,11 +8,11 @@ import { Transform } from "stream";
 import { pipeline } from "stream/promises";
 
 // Two providers, combined: one supplies a video stream and the other supplies
-// audio. The video endpoint returns every available format. We deliberately
-// select a modest H.264 video-only format locally instead of asking the
-// provider for `quality=lowest`: its selector can resolve to a large AV1 file
-// (and has done so in production), which then forces a very expensive full
-// video transcode.
+// audio. The video endpoint returns every available format; we rank
+// candidates locally and prefer a modest H.264/mp4 format — not to avoid a
+// transcode (we don't do one: only the audio track and short per-clip
+// renders ever get downloaded), but because it's the most reliably
+// seekable format for ffmpeg to read directly over the network later.
 const VIDEO_HOST =
   process.env.VIDEO_RAPIDAPI_HOST || "cloud-api-hub-youtube-downloader.p.rapidapi.com";
 const AUDIO_HOST = process.env.AUDIO_RAPIDAPI_HOST || "youtube-mp36.p.rapidapi.com";
@@ -27,13 +27,11 @@ const DOWNLOAD_TOTAL_TIMEOUT_MS = positiveInteger(
   process.env.DOWNLOAD_TOTAL_TIMEOUT_MS,
   30 * 60_000
 );
-const FFMPEG_TIMEOUT_MS = positiveInteger(process.env.FFMPEG_TIMEOUT_MS, 30 * 60_000);
+const PROBE_TIMEOUT_MS = positiveInteger(process.env.PROBE_TIMEOUT_MS, 45_000);
 const METADATA_TIMEOUT_MS = positiveInteger(process.env.METADATA_TIMEOUT_MS, 15_000);
 const MAX_API_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_REDIRECTS = 5;
-// Lower = smaller/faster source download, at the cost of a blurrier upscale
-// once it's stretched to the 1080x1920 output frame. Override if needed.
-const TARGET_SHORT_EDGE = positiveInteger(process.env.TARGET_SHORT_EDGE, 480);
+const TARGET_SHORT_EDGE = 720;
 const MIN_MEDIA_DURATION_SEC = 1;
 
 function positiveInteger(value, fallback) {
@@ -250,6 +248,14 @@ function sanitizeRequestHeaders(headers) {
   );
 }
 
+/** Formats a headers object as ffmpeg/ffprobe's `-headers` option expects. */
+function buildFfmpegHeaderString(headers) {
+  return Object.entries(headers || {})
+    .filter(([, value]) => value != null)
+    .map(([key, value]) => `${key}: ${value}\r\n`)
+    .join("");
+}
+
 function headersForRedirect(headers, previousUrl, nextUrl) {
   if (previousUrl.origin === nextUrl.origin) return headers;
   const sensitive = new Set([
@@ -453,105 +459,27 @@ function appendTail(current, next, limit = 12_000) {
   return combined.length > limit ? combined.slice(-limit) : combined;
 }
 
-function parseFfmpegTimestamp(value) {
-  const parts = String(value).split(":");
-  if (parts.length !== 3) return null;
-  const seconds = Number(parts[0]) * 3600 + Number(parts[1]) * 60 + Number(parts[2]);
-  return Number.isFinite(seconds) ? seconds : null;
-}
-
-function runFfmpeg(args, { durationSec, onProgress } = {}) {
+/**
+ * Returns ffprobe's stream and container metadata for a media source —
+ * either a local file path or a remote http(s) URL. For a remote URL,
+ * ffprobe only fetches the metadata it needs (typically the container
+ * header), not the whole file.
+ */
+function probeMedia(input, { headers, timeoutMs = PROBE_TIMEOUT_MS } = {}) {
   return new Promise((resolve, reject) => {
-    const proc = spawn("ffmpeg", ["-hide_banner", "-nostats", "-progress", "pipe:1", ...args]);
-    let stderr = "";
-    let stdoutBuffer = "";
-    let currentTimeSec = 0;
-    let lastPercent = -1;
-    let settled = false;
-    let timedOut = false;
-
-    const finish = (err) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      if (err) reject(err);
-      else resolve();
-    };
-
-    const report = () => {
-      if (!onProgress) return;
-      if (Number.isFinite(durationSec) && durationSec > 0) {
-        const percent = Math.min(100, Math.floor((currentTimeSec / durationSec) * 100));
-        if (percent !== 100 && percent < lastPercent + 2) return;
-        lastPercent = percent;
-        onProgress(percent, currentTimeSec);
-      } else {
-        onProgress(null, currentTimeSec);
-      }
-    };
-
-    const parseProgress = (text) => {
-      stdoutBuffer += text;
-      const lines = stdoutBuffer.split(/\r?\n/);
-      stdoutBuffer = lines.pop() || "";
-      for (const line of lines) {
-        const separator = line.indexOf("=");
-        if (separator === -1) continue;
-        const key = line.slice(0, separator);
-        const value = line.slice(separator + 1);
-        if (key === "out_time") {
-          currentTimeSec = parseFfmpegTimestamp(value) ?? currentTimeSec;
-        } else if (key === "out_time_us") {
-          const microseconds = Number(value);
-          if (Number.isFinite(microseconds)) currentTimeSec = microseconds / 1_000_000;
-        } else if (key === "progress") {
-          if (value === "end" && durationSec) currentTimeSec = durationSec;
-          report();
-        }
-      }
-    };
-
-    const timer = setTimeout(() => {
-      timedOut = true;
-      proc.kill("SIGKILL");
-    }, FFMPEG_TIMEOUT_MS);
-    timer.unref?.();
-
-    proc.stdout.on("data", (data) => parseProgress(data.toString()));
-    proc.stderr.on("data", (data) => {
-      stderr = appendTail(stderr, data.toString());
-    });
-    proc.once("error", (err) =>
-      finish(new Error(`Failed to start ffmpeg. Is it installed and on PATH? (${err.message})`))
-    );
-    proc.once("close", (code, signal) => {
-      if (timedOut) {
-        return finish(new Error(`ffmpeg timed out after ${Math.round(FFMPEG_TIMEOUT_MS / 60_000)} minutes`));
-      }
-      if (code === 0) return finish();
-      finish(
-        new Error(
-          `ffmpeg exited with ${code == null ? `signal ${signal}` : `code ${code}`}: ${
-            stderr.trim().slice(-2_000) || "no diagnostic output"
-          }`
-        )
-      );
-    });
-  });
-}
-
-/** Returns ffprobe's stream and container metadata for a media file. */
-function probeMedia(filePath) {
-  return new Promise((resolve, reject) => {
-    const proc = spawn("ffprobe", [
-      "-v",
-      "error",
+    const args = ["-v", "error"];
+    if (headers && Object.keys(headers).length) {
+      args.push("-headers", buildFfmpegHeaderString(headers));
+    }
+    args.push(
       "-show_entries",
       "format=duration,size,format_name:stream=codec_type,codec_name,width,height,duration",
       "-of",
       "json",
-      filePath,
-    ]);
+      input
+    );
+
+    const proc = spawn("ffprobe", args);
     let stdout = "";
     let stderr = "";
     let settled = false;
@@ -565,8 +493,8 @@ function probeMedia(filePath) {
     };
     const timer = setTimeout(() => {
       proc.kill("SIGKILL");
-      finish(new Error(`ffprobe timed out while reading ${filePath}`));
-    }, 30_000);
+      finish(new Error(`ffprobe timed out while reading ${input}`));
+    }, timeoutMs);
     timer.unref?.();
 
     proc.stdout.on("data", (data) => {
@@ -582,13 +510,13 @@ function probeMedia(filePath) {
       if (settled) return;
       if (code !== 0) {
         return finish(
-          new Error(`ffprobe failed on ${filePath}: ${stderr.trim().slice(-1_000) || `exit code ${code}`}`)
+          new Error(`ffprobe failed on ${input}: ${stderr.trim().slice(-1_000) || `exit code ${code}`}`)
         );
       }
       try {
         finish(null, JSON.parse(stdout));
       } catch (err) {
-        finish(new Error(`ffprobe returned invalid JSON for ${filePath}: ${err.message}`));
+        finish(new Error(`ffprobe returned invalid JSON for ${input}: ${err.message}`));
       }
     });
   });
@@ -603,32 +531,44 @@ function mediaDuration(info) {
   return streamDurations.length ? Math.max(...streamDurations) : null;
 }
 
-/** Throws if a downloaded file is empty, truncated-looking, or missing required streams. */
+/**
+ * Throws if a media source is empty/unreachable, truncated-looking, or
+ * missing required streams. `input` may be a local file path (checked for
+ * existence/size first) or a remote http(s) URL (probed directly, with
+ * optional request `headers`).
+ */
 async function assertValidMedia(
-  filePath,
+  input,
   expectedTypes,
   label,
-  { expectedH264 = false, maxShortEdge = null } = {}
+  { expectedH264 = false, maxShortEdge = null, headers, timeoutMs } = {}
 ) {
   const requiredTypes = Array.isArray(expectedTypes) ? expectedTypes : [expectedTypes];
-  let stat;
-  try {
-    stat = await fs.promises.stat(filePath);
-  } catch {
-    throw new Error(`${label} download is missing (${filePath}). The provider link may have expired.`);
-  }
-  const minimumBytes = requiredTypes.includes("video") ? 4_096 : 1_024;
-  if (!stat.isFile() || stat.size < minimumBytes) {
-    throw new Error(
-      `${label} download is implausibly small (${stat.size} bytes; expected at least ${minimumBytes}).`
-    );
+  const isRemote = /^https?:\/\//i.test(input);
+
+  if (!isRemote) {
+    let stat;
+    try {
+      stat = await fs.promises.stat(input);
+    } catch {
+      throw new Error(`${label} download is missing (${input}). The provider link may have expired.`);
+    }
+    const minimumBytes = requiredTypes.includes("video") ? 4_096 : 1_024;
+    if (!stat.isFile() || stat.size < minimumBytes) {
+      throw new Error(
+        `${label} download is implausibly small (${stat.size} bytes; expected at least ${minimumBytes}).`
+      );
+    }
   }
 
   let info;
   try {
-    info = await probeMedia(filePath);
+    info = await probeMedia(input, { headers, timeoutMs });
   } catch (err) {
-    throw new Error(`${label} download isn't a readable media file: ${err.message}`, { cause: err });
+    throw new Error(
+      `${label} ${isRemote ? "isn't reachable or readable" : "download isn't a readable media file"}: ${err.message}`,
+      { cause: err }
+    );
   }
 
   const streams = info.streams || [];
@@ -636,7 +576,7 @@ async function assertValidMedia(
     if (!streams.some((stream) => stream.codec_type === type)) {
       const found = [...new Set(streams.map((stream) => stream.codec_type).filter(Boolean))];
       throw new Error(
-        `${label} download doesn't contain a ${type} stream (found: ${found.join(", ") || "nothing"}). ` +
+        `${label} doesn't contain a ${type} stream (found: ${found.join(", ") || "nothing"}). ` +
           "The provider may have returned the wrong file."
       );
     }
@@ -736,8 +676,9 @@ function videoFormatRank(format) {
   else if (withinTarget) group = 4;
   else group = 5;
 
-  // Prefer the best resolution up to 720p. If only larger formats exist,
-  // prefer the smallest one to control download and fallback-transcode cost.
+  // Prefer the best resolution up to TARGET_SHORT_EDGE. If only larger
+  // formats exist, prefer the smallest one — it's still the cheapest to
+  // seek/decode per clip even though we no longer download it wholesale.
   const resolutionRank = withinTarget ? -shortEdge : shortEdge;
   const parsedBitrate = Number(format.tbr ?? format.bitrate);
   const bitrate = Number.isFinite(parsedBitrate) ? parsedBitrate : Number.POSITIVE_INFINITY;
@@ -807,11 +748,11 @@ async function fetchAudioTrack(videoId, { attempts = 6, intervalMs = 2_000, sign
   );
 }
 
-async function withVideoFormatFallbacks(formats, attempt, { onProgress, signal } = {}) {
+/** Tries each ranked candidate in order, skipping to the next on a normal failure but stopping immediately on a machine-wide one (disk full, out of memory, etc). */
+async function withVideoFormatFallbacks(formats, attempt, { onProgress } = {}) {
   const failures = [];
 
   for (let index = 0; index < formats.length; index++) {
-    if (signal?.aborted) throw abortError(signal);
     const format = formats[index];
     const label = videoFormatLabel(format);
     emitProgress(onProgress, `Trying video ${label} (${index + 1} of ${formats.length})`);
@@ -819,7 +760,6 @@ async function withVideoFormatFallbacks(formats, attempt, { onProgress, signal }
     try {
       return await attempt(format, index);
     } catch (err) {
-      if (signal?.aborted) throw abortError(signal);
       if (isFatalFormatAttemptError(err)) {
         emitProgress(onProgress, `Video processing stopped: ${err.message}`);
         throw err;
@@ -857,24 +797,17 @@ function durationToleranceSec(durationSec) {
 }
 
 /**
- * Downloads a YouTube video's video-only and audio-only streams, validates
- * both, and muxes them into `jobDir/source.mp4`. Broken candidate URLs truly
- * fall through to the next ranked format.
- *
- * The audio-only track is almost always much smaller/faster to obtain than
- * the video, so as soon as it's downloaded and validated (well before video
- * download + muxing finishes), it's copied to `jobDir/audio.mp3` and handed
- * to `onAudioReady(audioPath)` — letting the caller start transcription and
- * clip selection while the video is still downloading in the background.
+ * Downloads only the audio-only track locally (needed for Whisper), and
+ * validates a usable video-only source *without* downloading it. Clips are
+ * rendered later by having ffmpeg seek directly into that remote URL for
+ * just its own short time window — the full video is never downloaded or
+ * stored, which is both far less data moved and far less time spent than
+ * fetching the whole source video up front.
  */
-export async function downloadVideo(youtubeUrl, jobDir, onProgress, onAudioReady) {
+export async function prepareSources(youtubeUrl, jobDir, onProgress) {
   requireApiKey();
   const videoId = extractVideoId(youtubeUrl);
-  const videoTmpPath = path.join(jobDir, "_video_only.mp4");
-  const audioTmpPath = path.join(jobDir, "_audio_only.mp3");
-  const finalPath = path.join(jobDir, "source.mp4");
-  const temporaryPaths = [videoTmpPath, audioTmpPath];
-  let succeeded = false;
+  const audioPath = path.join(jobDir, "audio.mp3");
 
   try {
     emitProgress(onProgress, "Requesting available video formats and audio track");
@@ -892,168 +825,36 @@ export async function downloadVideo(youtubeUrl, jobDir, onProgress, onAudioReady
     }
     emitProgress(onProgress, `Found ${formats.length} usable video format${formats.length === 1 ? "" : "s"}`);
 
-    const downloadsController = new AbortController();
-    let audioError = null;
-    const audioTask = (async () => {
-      try {
-        await downloadToFile(audioMeta.link, audioTmpPath, {
-          onProgress,
-          signal: downloadsController.signal,
-          label: "Audio track",
+    emitProgress(onProgress, "Downloading audio track");
+    await downloadToFile(audioMeta.link, audioPath, { onProgress, label: "Audio track" });
+    const audioInfo = await assertValidMedia(audioPath, "audio", "Audio");
+    emitProgress(onProgress, "Audio ready");
+
+    emitProgress(onProgress, "Selecting a usable video source");
+    const { format, info: videoInfo } = await withVideoFormatFallbacks(
+      formats,
+      async (candidate) => {
+        const headers = sanitizeRequestHeaders(candidate.http_headers || {});
+        const info = await assertValidMedia(candidate.url, "video", videoFormatLabel(candidate), {
+          headers,
         });
-        const audioInfo = await assertValidMedia(audioTmpPath, "audio", "Audio");
+        assertCompatibleDurations(info, audioInfo);
+        return { format: candidate, info };
+      },
+      { onProgress }
+    );
 
-        if (onAudioReady) {
-          const earlyAudioPath = path.join(jobDir, "audio.mp3");
-          try {
-            await fs.promises.copyFile(audioTmpPath, earlyAudioPath);
-            emitProgress(onProgress, "Audio ready — starting transcription in parallel with video download");
-            onAudioReady(earlyAudioPath);
-          } catch (err) {
-            console.warn("onAudioReady callback failed:", err);
-          }
-        }
+    emitProgress(onProgress, `Selected video ${videoFormatLabel(format)}`);
 
-        return audioInfo;
-      } catch (err) {
-        audioError = err;
-        if (!downloadsController.signal.aborted) downloadsController.abort(err);
-        return null;
-      }
-    })();
-
-    try {
-      await withVideoFormatFallbacks(
-        formats,
-        async (format) => {
-          const label = videoFormatLabel(format);
-          await Promise.all([
-            fs.promises.rm(videoTmpPath, { force: true }),
-            fs.promises.rm(finalPath, { force: true }),
-          ]);
-
-          try {
-            await downloadToFile(format.url, videoTmpPath, {
-              headers: format.http_headers || {},
-              onProgress,
-              signal: downloadsController.signal,
-              label: `Video ${label}`,
-            });
-            const videoInfo = await assertValidMedia(videoTmpPath, "video", "Video", {
-              expectedH264: isH264Format(format),
-              maxShortEdge:
-                isH264Format(format) && formatShortEdge(format) <= TARGET_SHORT_EDGE
-                  ? TARGET_SHORT_EDGE
-                  : null,
-            });
-
-            const audioInfo = await audioTask;
-            if (audioError) throw audioError;
-            assertCompatibleDurations(videoInfo, audioInfo);
-
-            const videoCodec = videoInfo.videoStream?.codec_name || "";
-            const canCopyVideo = /^(h264|avc1)/i.test(videoCodec);
-            const targetDuration = Math.min(videoInfo.durationSec, audioInfo.durationSec);
-
-            if (canCopyVideo) {
-              emitProgress(onProgress, "Merging video and audio without re-encoding video (0%)");
-            } else {
-              emitProgress(
-                onProgress,
-                `Compatibility-transcoding ${videoCodec || "video"} because no H.264 format was usable (0%)`
-              );
-            }
-
-            const videoCodecArgs = canCopyVideo
-              ? ["-c:v", "copy"]
-              : [
-                  "-c:v",
-                  "libx264",
-                  "-preset",
-                  "veryfast",
-                  "-crf",
-                  "22",
-                  "-pix_fmt",
-                  "yuv420p",
-                  // See ffmpeg.js: libx264's auto thread-count detection can read
-                  // a container host's full core count instead of its cgroup
-                  // limit, over-threading into an OOM. Cap explicitly.
-                  "-threads",
-                  process.env.FFMPEG_THREADS || "2",
-                ];
-            await runFfmpeg(
-              [
-                "-y",
-                "-i",
-                videoTmpPath,
-                "-i",
-                audioTmpPath,
-                "-map",
-                "0:v:0",
-                "-map",
-                "1:a:0",
-                ...videoCodecArgs,
-                "-c:a",
-                "aac",
-                "-b:a",
-                "192k",
-                "-movflags",
-                "+faststart",
-                "-shortest",
-                finalPath,
-              ],
-              {
-                durationSec: targetDuration,
-                onProgress: (percent, elapsedSec) => {
-                  const action = canCopyVideo
-                    ? "Merging video and audio"
-                    : "Compatibility-transcoding video";
-                  emitProgress(
-                    onProgress,
-                    percent == null
-                      ? `${action} (${elapsedSec.toFixed(1)}s processed)`
-                      : `${action} (${percent}%)`
-                  );
-                },
-              }
-            );
-
-            const finalInfo = await assertValidMedia(finalPath, ["video", "audio"], "Merged output");
-            const finalTolerance = durationToleranceSec(targetDuration);
-            if (finalInfo.durationSec < targetDuration - finalTolerance) {
-              throw new Error(
-                `Merged output appears truncated (${finalInfo.durationSec.toFixed(
-                  1
-                )}s; expected about ${targetDuration.toFixed(1)}s).`
-              );
-            }
-
-            emitProgress(onProgress, `Selected video ${label}`);
-            return finalInfo;
-          } catch (err) {
-            await Promise.all([
-              fs.promises.rm(videoTmpPath, { force: true }).catch(() => {}),
-              fs.promises.rm(finalPath, { force: true }).catch(() => {}),
-            ]);
-            throw err;
-          }
-        },
-        { onProgress, signal: downloadsController.signal }
-      );
-    } catch (err) {
-      if (!downloadsController.signal.aborted) downloadsController.abort(err);
-      await audioTask;
-      throw err;
-    }
-
-    succeeded = true;
-    emitProgress(onProgress, "Download complete");
-    return finalPath;
+    return {
+      audioPath,
+      videoUrl: format.url,
+      videoHeaders: sanitizeRequestHeaders(format.http_headers || {}),
+      durationSec: Math.min(videoInfo.durationSec, audioInfo.durationSec),
+    };
   } catch (err) {
-    throw new Error(`Could not download and prepare this video: ${err.message}`, { cause: err });
-  } finally {
-    await Promise.all(temporaryPaths.map((file) => fs.promises.rm(file, { force: true }).catch(() => {})));
-    if (!succeeded) await fs.promises.rm(finalPath, { force: true }).catch(() => {});
+    await fs.promises.rm(audioPath, { force: true }).catch(() => {});
+    throw new Error(`Could not prepare this video: ${err.message}`, { cause: err });
   }
 }
 
@@ -1093,8 +894,10 @@ export async function getVideoInfo(youtubeUrl) {
   }
 }
 
+export { buildFfmpegHeaderString };
+
 // Narrow test hooks for deterministic tests of provider ranking and transport
-// failure handling. The public downloadVideo/getVideoInfo contract is unchanged.
+// failure handling. The public prepareSources/getVideoInfo contract is unchanged.
 export const __testing = {
   assertValidMedia,
   downloadToFile,
