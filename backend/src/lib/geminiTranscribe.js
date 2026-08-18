@@ -194,24 +194,43 @@ function findRegressionIndex(words) {
 // ending at 30.13s (~50% over), while staying perfectly internally
 // monotonic the whole time, so the regression check above can't catch it.
 // Since we know each chunk's true duration exactly (we cut it ourselves),
-// rescale the reported timestamps to fit it whenever they overshoot by more
-// than a small tolerance — this is what turns an inflated-but-ordered
-// sequence back into one that lines up with the real audio.
-function rescaleToFitDuration(words, trueDurationSec, toleranceRatio = 1.05) {
-  if (!words.length) return words;
-  const reportedMaxEnd = Math.max(...words.map((w) => w.end));
-  if (reportedMaxEnd <= 0 || reportedMaxEnd <= trueDurationSec * toleranceRatio) return words;
-  const scale = trueDurationSec / reportedMaxEnd;
+// ALWAYS rescale the reported timestamps to fit it — even a few percent of
+// drift adds up to many real seconds over a multi-minute chunk (5% of a
+// 360s chunk is 18s of unnoticed slop, which is exactly what let a subtler
+// case of this same bug through the first version of this fix). Rescaling
+// is a no-op on an already-accurate response, so there's no downside to
+// applying it unconditionally.
+function reportedMaxEnd(words) {
+  return words.length ? Math.max(...words.map((w) => w.end)) : 0;
+}
+
+function rescaleToFitDuration(words, trueDurationSec) {
+  const maxEnd = reportedMaxEnd(words);
+  if (maxEnd <= 0) return words;
+  const scale = trueDurationSec / maxEnd;
   return words.map((w) => ({ ...w, start: w.start * scale, end: w.end * scale }));
+}
+
+// If the reported span is wildly off from the true duration (not just
+// mis-scaled but, say, only the first few words before giving up), a linear
+// rescale would distort it further rather than recover it — retry instead.
+const PLAUSIBLE_RATIO_MIN = 0.3;
+const PLAUSIBLE_RATIO_MAX = 3.0;
+
+function isImplausibleDuration(words, trueDurationSec) {
+  const maxEnd = reportedMaxEnd(words);
+  if (maxEnd <= 0) return true;
+  const ratio = maxEnd / trueDurationSec;
+  return ratio < PLAUSIBLE_RATIO_MIN || ratio > PLAUSIBLE_RATIO_MAX;
 }
 
 /**
  * Transcribes one chunk, retrying the whole chunk from scratch (a fresh
  * Gemini call is a fresh chance at clean timestamps) if a backward-jump
- * regression is detected, then rescales the result to the chunk's true
- * duration to correct for timestamp inflation. If retries still won't come
- * back clean, truncates at the regression point rather than returning
- * corrupted timestamps — losing the rest of that chunk's transcript is far
+ * regression or an implausible overall duration is detected, then always
+ * rescales the result to the chunk's true duration. If retries still won't
+ * come back clean, uses the longest clean prefix seen rather than returning
+ * corrupted timestamps — losing part of that chunk's transcript is far
  * better than mislabeling it.
  */
 async function transcribeChunkReliably(chunkPath, trueDurationSec, { attempts = 3 } = {}) {
@@ -219,13 +238,20 @@ async function transcribeChunkReliably(chunkPath, trueDurationSec, { attempts = 
   for (let attempt = 1; attempt <= attempts; attempt++) {
     const words = await transcribeChunk(chunkPath);
     const regressionAt = findRegressionIndex(words);
-    if (regressionAt === -1) return rescaleToFitDuration(words, trueDurationSec);
+    const clean = regressionAt === -1 ? words : words.slice(0, regressionAt);
+
+    const problems = [];
+    if (regressionAt !== -1) problems.push(`a timestamp regression at word ${regressionAt} of ${words.length}`);
+    if (isImplausibleDuration(clean, trueDurationSec)) {
+      problems.push(`an implausible duration (reported ${reportedMaxEnd(clean).toFixed(1)}s for a ${trueDurationSec.toFixed(1)}s clip)`);
+    }
+
+    if (clean.length > best.length) best = clean;
+    if (!problems.length) return rescaleToFitDuration(clean, trueDurationSec);
 
     console.warn(
-      `Transcription chunk had a timestamp regression at word ${regressionAt} of ${words.length} ` +
-        `(attempt ${attempt}/${attempts}), retrying`
+      `Transcription chunk had ${problems.join(" and ")} (attempt ${attempt}/${attempts}), retrying`
     );
-    if (words.slice(0, regressionAt).length > best.length) best = words.slice(0, regressionAt);
   }
   return rescaleToFitDuration(best, trueDurationSec);
 }
