@@ -13,8 +13,8 @@ function getClient() {
 }
 
 const MODEL = process.env.GEMINI_MODEL || "gemini-3.6-flash";
-// See geminiTranscribe.js — without this, a stalled request hangs forever
-// with no error and nothing in the logs, instead of failing and retrying.
+// Without this, a stalled request hangs forever with no error and nothing
+// in the logs, instead of failing and being retried.
 const TIMEOUT_MS = Number.parseInt(process.env.GEMINI_TIMEOUT_MS, 10) || 60_000;
 
 const CLIP_PICK_SCHEMA = {

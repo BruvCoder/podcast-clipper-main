@@ -9,7 +9,7 @@ import { randomUUID } from "crypto";
 
 import { prepareSources, getVideoInfo } from "./lib/rapidapi.js";
 import { createClip, ensureDir } from "./lib/ffmpeg.js";
-import { transcribeAudio } from "./lib/geminiTranscribe.js";
+import { transcribeAudio } from "./lib/groqTranscribe.js";
 import { pickClips } from "./lib/gemini.js";
 import { groupWordsIntoPhrases, phrasesToPromptText } from "./lib/transcript.js";
 import { requireAuth } from "./lib/firebaseAdmin.js";
@@ -183,9 +183,10 @@ async function runPipeline(id, jobDir, { youtubeUrl, numClips, clipLengthSec, su
     }
   );
 
-  // Real word-level timestamps from Gemini, used both for tight subtitle
-  // sync and (grouped into phrases below) for the clip-selection prompt.
-  updateJob(id, { stage: "Transcribing with Gemini" });
+  // Real word-level timestamps from Whisper (hosted on Groq), used both for
+  // tight subtitle sync and (grouped into phrases below) for the
+  // clip-selection prompt.
+  updateJob(id, { stage: "Transcribing audio" });
   const words = await transcribeAudio(audioPath);
   if (!words.length) throw new Error("Transcription returned no words.");
 

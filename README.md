@@ -9,7 +9,7 @@ Podcast Clipper turns a public YouTube podcast into ranked, subtitled vertical c
 1. The frontend signs users in with Google or email/password through Firebase Authentication.
 2. Authenticated API requests include a Firebase ID token. The backend verifies the token with Firebase Admin and keeps each user's jobs separate.
 3. The backend uses two RapidAPI providers: it downloads the audio track in full, and validates (but does not download) a video-only stream URL.
-4. Gemini transcribes the local audio track with word-level timestamps (in chunks, for reliability on longer episodes).
+4. Whisper large-v3 (hosted on Groq) transcribes the local audio track, producing word-level timestamps derived from acoustic alignment against the audio.
 5. Gemini receives the timestamped transcript and selects, titles, and ranks the best moments.
 6. For each selected moment, FFmpeg seeks directly into the remote video URL for just that time window, reframes it to 9:16, and burns in timed subtitles — the full source video is never downloaded or stored. The browser polls the job and displays the resulting clips.
 
@@ -22,7 +22,8 @@ The active downloader does not require `yt-dlp`.
 - A **RapidAPI key** subscribed to both providers used by the backend:
   - Cloud API Hub - YouTube Downloader (`cloud-api-hub-youtube-downloader.p.rapidapi.com`)
   - YouTube MP3 (`youtube-mp36.p.rapidapi.com`)
-- A **Gemini API key** from [Google AI Studio](https://aistudio.google.com/apikey).
+- A **Gemini API key** from [Google AI Studio](https://aistudio.google.com/apikey), used to select and rank clip moments.
+- A **Groq API key** from [Groq Console](https://console.groq.com/keys), used to transcribe audio with Whisper.
 - A **Firebase project** with a Web app, Firebase Authentication, and a Firebase Admin service account.
 
 Confirm the local tools before installing dependencies:
@@ -98,6 +99,7 @@ Edit `backend/.env` and set:
 ```dotenv
 RAPIDAPI_KEY=your_rapidapi_key_here
 GEMINI_API_KEY=your_gemini_api_key_here
+GROQ_API_KEY=your_groq_api_key_here
 FIREBASE_SERVICE_ACCOUNT_PATH=./firebase-service-account.json
 ```
 
@@ -106,10 +108,10 @@ The remaining values have local defaults:
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `GEMINI_MODEL` | Model used to select and rank clip moments | `gemini-3.6-flash` |
-| `GEMINI_TRANSCRIBE_MODEL` | Model used to transcribe audio | Falls back to `GEMINI_MODEL` |
+| `GROQ_TRANSCRIBE_MODEL` | Whisper model used to transcribe audio | `whisper-large-v3` |
 | `PORT` | Backend HTTP port | `8787` |
-| `TRANSCRIBE_CHUNK_SEC` | Seconds of audio sent to Gemini per transcription request; smaller = tighter caption sync but more requests | `45` |
-| `TRANSCRIBE_CONCURRENCY` | How many chunks to transcribe with Gemini at once | `3` |
+| `TRANSCRIBE_CHUNK_SEC` | Seconds of audio per transcription request; sized for the API's file-size limit, not timing accuracy | `600` |
+| `TRANSCRIBE_CONCURRENCY` | How many chunks to transcribe at once | `3` |
 | `VIDEO_RAPIDAPI_HOST` | Override the video provider host | Built-in provider host |
 | `AUDIO_RAPIDAPI_HOST` | Override the audio provider host | Built-in provider host |
 | `RAPIDAPI_TIMEOUT_MS` | Provider API request timeout | `30000` |
@@ -181,7 +183,7 @@ npm run build
 - Job metadata lives in an in-memory `Map`. Restarting the backend removes job history and status, and multiple backend instances do not share state.
 - Source media, extracted audio, and rendered clips are written under `backend/jobs/`. Files remain on that machine until removed, have no automatic retention policy, and are unsuitable for ephemeral or multi-instance hosting.
 - Firebase Authentication does not make file storage private. A production version should move job state to a database, store media in private object storage, authorize every download, and add cleanup/retention jobs.
-- RapidAPI receives the YouTube video ID and its providers supply the media streams. Gemini receives the audio (for transcription) and the timestamped transcript (for clip selection). FFmpeg processing runs locally on the backend.
+- RapidAPI receives the YouTube video ID and its providers supply the media streams. Groq receives the audio for transcription, and Gemini receives the resulting timestamped transcript for clip selection. FFmpeg processing runs locally on the backend.
 - Only process media you are authorized to download and reuse. You are responsible for complying with YouTube's terms, copyright law, and the terms and quotas of all configured API providers.
 
 ## Current product limitations
@@ -201,7 +203,7 @@ backend/
       firebaseAdmin.js     # Firebase ID-token verification
       rapidapi.js          # audio download and remote video-source selection
       ffmpeg.js            # per-clip remote-seek rendering, reframing, and subtitle burn-in
-      geminiTranscribe.js  # chunked, word-level-timestamped transcription via Gemini
+      groqTranscribe.js    # word-level-timestamped transcription via Whisper on Groq
       gemini.js            # clip selection and ranking
   jobs/                    # local per-job media and output (gitignored)
 frontend/
