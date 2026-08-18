@@ -1,5 +1,5 @@
 /**
- * Groups word-level {word, start, end} timestamps (from Whisper) into
+ * Groups word-level {word, start, end} timestamps (from Gemini's transcription) into
  * readable phrase-like chunks, similar to how a human would break a
  * transcript into subtitle lines: break on a natural pause, a sentence
  * ending, or once a chunk gets too long/long-running.

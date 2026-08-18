@@ -107,7 +107,7 @@ inflating it to fill the requested count.
 Respond only with JSON matching the provided schema.`;
 
 /**
- * Given a full timestamped transcript (phrase-level segments from Whisper),
+ * Given a full timestamped transcript (phrase-level segments from Gemini's own transcription),
  * asks Gemini to pick the best `numClips` non-overlapping moments (each
  * close to `clipLengthSec` seconds) and score them for predicted view potential.
  */

@@ -158,7 +158,7 @@ const HIGHLIGHT_HEX = "#3DDC84";
 
 /**
  * Builds a .ass subtitle file for the given clip window: short, punchy
- * uppercase word-chunk captions (~3 real words at a time, from Whisper's
+ * uppercase word-chunk captions (~3 real words at a time, from Gemini's
  * word-level timestamps), bold with a heavy black outline (no box) sitting
  * in the lower-middle safe zone, with the exact word being spoken lit up in
  * a highlight color and given a little scale "pop" — plus a centered

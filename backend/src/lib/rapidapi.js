@@ -797,7 +797,7 @@ function durationToleranceSec(durationSec) {
 }
 
 /**
- * Downloads only the audio-only track locally (needed for Whisper), and
+ * Downloads only the audio-only track locally (needed for transcription), and
  * validates a usable video-only source *without* downloading it. Clips are
  * rendered later by having ffmpeg seek directly into that remote URL for
  * just its own short time window — the full video is never downloaded or

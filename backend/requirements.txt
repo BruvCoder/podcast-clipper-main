@@ -1,3 +1,0 @@
-# Used by scripts/transcribe_whisper.py for local, word-level-timestamped
-# transcription (invoked as a subprocess from src/lib/whisper.js).
-faster-whisper>=1.0.0

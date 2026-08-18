@@ -9,7 +9,7 @@ Podcast Clipper turns a public YouTube podcast into ranked, subtitled vertical c
 1. The frontend signs users in with Google or email/password through Firebase Authentication.
 2. Authenticated API requests include a Firebase ID token. The backend verifies the token with Firebase Admin and keeps each user's jobs separate.
 3. The backend uses two RapidAPI providers: it downloads the audio track in full, and validates (but does not download) a video-only stream URL.
-4. `faster-whisper` transcribes the local audio track with word-level timestamps.
+4. Gemini transcribes the local audio track with word-level timestamps (in chunks, for reliability on longer episodes).
 5. Gemini receives the timestamped transcript and selects, titles, and ranks the best moments.
 6. For each selected moment, FFmpeg seeks directly into the remote video URL for just that time window, reframes it to 9:16, and burns in timed subtitles — the full source video is never downloaded or stored. The browser polls the job and displays the resulting clips.
 
@@ -19,7 +19,6 @@ The active downloader does not require `yt-dlp`.
 
 - **Node.js 22.12 or newer** and npm. Vite 8 requires a current Node release.
 - **FFmpeg and ffprobe** available on `PATH`.
-- **Python 3** with pip.
 - A **RapidAPI key** subscribed to both providers used by the backend:
   - Cloud API Hub - YouTube Downloader (`cloud-api-hub-youtube-downloader.p.rapidapi.com`)
   - YouTube MP3 (`youtube-mp36.p.rapidapi.com`)
@@ -107,18 +106,17 @@ The remaining values have local defaults:
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `GEMINI_MODEL` | Model used to select and rank clip moments | `gemini-3.6-flash` |
+| `GEMINI_TRANSCRIBE_MODEL` | Model used to transcribe audio | Falls back to `GEMINI_MODEL` |
 | `PORT` | Backend HTTP port | `8787` |
-| `WHISPER_MODEL` | faster-whisper model size | `base` |
-| `PYTHON_BIN` | Python executable launched by Node | `python3` |
+| `TRANSCRIBE_CHUNK_SEC` | Seconds of audio sent to Gemini per transcription request | `360` |
+| `TRANSCRIBE_CONCURRENCY` | How many chunks to transcribe with Gemini at once | `3` |
 | `VIDEO_RAPIDAPI_HOST` | Override the video provider host | Built-in provider host |
 | `AUDIO_RAPIDAPI_HOST` | Override the audio provider host | Built-in provider host |
 | `RAPIDAPI_TIMEOUT_MS` | Provider API request timeout | `30000` |
 | `DOWNLOAD_INACTIVITY_TIMEOUT_MS` | Maximum idle time while receiving media | `45000` |
-| `DOWNLOAD_TOTAL_TIMEOUT_MS` | Maximum total time for one media download | `1800000` |
-| `FFMPEG_TIMEOUT_MS` | Maximum merge/transcode time | `1800000` |
+| `DOWNLOAD_TOTAL_TIMEOUT_MS` | Maximum total time for the audio download | `1800000` |
+| `PROBE_TIMEOUT_MS` | Maximum time to probe a (local or remote) media source | `45000` |
 | `METADATA_TIMEOUT_MS` | YouTube metadata request timeout | `15000` |
-
-If Python is named differently, set `PYTHON_BIN` accordingly—for example, `python` on some Windows installations. The first transcription downloads the selected Whisper model and can take longer than later runs.
 
 ## 3. Install the frontend
 
@@ -183,28 +181,27 @@ npm run build
 - Job metadata lives in an in-memory `Map`. Restarting the backend removes job history and status, and multiple backend instances do not share state.
 - Source media, extracted audio, and rendered clips are written under `backend/jobs/`. Files remain on that machine until removed, have no automatic retention policy, and are unsuitable for ephemeral or multi-instance hosting.
 - Firebase Authentication does not make file storage private. A production version should move job state to a database, store media in private object storage, authorize every download, and add cleanup/retention jobs.
-- RapidAPI receives the YouTube video ID and its providers supply the media streams. Gemini receives the timestamped transcript for clip selection. Whisper transcription and FFmpeg processing run locally.
+- RapidAPI receives the YouTube video ID and its providers supply the media streams. Gemini receives the audio (for transcription) and the timestamped transcript (for clip selection). FFmpeg processing runs locally on the backend.
 - Only process media you are authorized to download and reuse. You are responsible for complying with YouTube's terms, copyright law, and the terms and quotas of all configured API providers.
 
 ## Current product limitations
 
 - The vertical reframe uses a center crop or padded layout; it does not track faces or active speakers.
 - The virality score is Gemini's relative judgment across the returned clips, not a trained prediction or guarantee of performance.
-- Processing is CPU-, memory-, disk-, and network-intensive. Long videos and larger Whisper models substantially increase runtime and resource usage.
+- Processing is CPU-, memory-, disk-, and network-intensive. Long videos substantially increase runtime, and transcription cost/time scales with episode length since it's billed per Gemini API call.
 - The pipeline targets public YouTube video URL formats supported by its URL parser and external providers; private, restricted, unavailable, or provider-blocked videos will fail.
 
 ## Project structure
 
 ```text
 backend/
-  scripts/
-    transcribe_whisper.py  # local faster-whisper transcription
   src/
     server.js              # authenticated API and job orchestration
     lib/
       firebaseAdmin.js     # Firebase ID-token verification
       rapidapi.js          # audio download and remote video-source selection
       ffmpeg.js            # per-clip remote-seek rendering, reframing, and subtitle burn-in
+      geminiTranscribe.js  # chunked, word-level-timestamped transcription via Gemini
       gemini.js            # clip selection and ranking
   jobs/                    # local per-job media and output (gitignored)
 frontend/

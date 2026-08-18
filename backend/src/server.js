@@ -9,7 +9,7 @@ import { randomUUID } from "crypto";
 
 import { prepareSources, getVideoInfo } from "./lib/rapidapi.js";
 import { createClip, ensureDir } from "./lib/ffmpeg.js";
-import { transcribeAudio } from "./lib/whisper.js";
+import { transcribeAudio } from "./lib/geminiTranscribe.js";
 import { pickClips } from "./lib/gemini.js";
 import { groupWordsIntoPhrases, phrasesToPromptText } from "./lib/transcript.js";
 import { requireAuth } from "./lib/firebaseAdmin.js";
@@ -183,9 +183,9 @@ async function runPipeline(id, jobDir, { youtubeUrl, numClips, clipLengthSec, su
     }
   );
 
-  // Real word-level timestamps from Whisper, used both for tight subtitle
+  // Real word-level timestamps from Gemini, used both for tight subtitle
   // sync and (grouped into phrases below) for the clip-selection prompt.
-  updateJob(id, { stage: "Transcribing with Whisper" });
+  updateJob(id, { stage: "Transcribing with Gemini" });
   const words = await transcribeAudio(audioPath);
   if (!words.length) throw new Error("Transcription returned no words.");
 
@@ -212,8 +212,8 @@ async function runPipeline(id, jobDir, { youtubeUrl, numClips, clipLengthSec, su
   await mapWithConcurrency(picks, CLIP_RENDER_CONCURRENCY, async (pick, i) => {
     const finalPath = path.join(clipsDir, `clip_${i + 1}.mp4`);
 
-    // Reframes to 9:16 and burns in punchy word-chunk captions (real Whisper
-    // word timing) in one ffmpeg pass. Video is fetched directly from
+    // Reframes to 9:16 and burns in punchy word-chunk captions (real
+    // word-level timing) in one ffmpeg pass. Video is fetched directly from
     // videoUrl for just this clip's window; audio is the local track
     // already downloaded for transcription.
     await createClip({ url: videoUrl, headers: videoHeaders }, audioPath, words, pick.start, pick.end, finalPath, {
