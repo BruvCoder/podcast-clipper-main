@@ -108,7 +108,7 @@ The remaining values have local defaults:
 | `GEMINI_MODEL` | Model used to select and rank clip moments | `gemini-3.6-flash` |
 | `GEMINI_TRANSCRIBE_MODEL` | Model used to transcribe audio | Falls back to `GEMINI_MODEL` |
 | `PORT` | Backend HTTP port | `8787` |
-| `TRANSCRIBE_CHUNK_SEC` | Seconds of audio sent to Gemini per transcription request | `360` |
+| `TRANSCRIBE_CHUNK_SEC` | Seconds of audio sent to Gemini per transcription request; smaller = tighter caption sync but more requests | `45` |
 | `TRANSCRIBE_CONCURRENCY` | How many chunks to transcribe with Gemini at once | `3` |
 | `VIDEO_RAPIDAPI_HOST` | Override the video provider host | Built-in provider host |
 | `AUDIO_RAPIDAPI_HOST` | Override the audio provider host | Built-in provider host |

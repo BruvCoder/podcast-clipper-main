@@ -21,11 +21,17 @@ function getClient() {
 // GEMINI_MODEL (which stays tuned for clip-selection's reasoning instead).
 const MODEL = process.env.GEMINI_TRANSCRIBE_MODEL || "gemini-3.5-flash-lite";
 
-// Long episodes are split into chunks before transcription: it keeps each
-// request's audio (base64-inlined) and JSON response comfortably small, and
-// short clips transcribe far more reliably than asking a model to hold
-// word-accurate timing across a full hour in one pass.
-const CHUNK_SEC = positiveInteger(process.env.TRANSCRIBE_CHUNK_SEC, 360);
+// Long episodes are split into chunks before transcription. Short chunks
+// matter for more than request-size headroom: the affine correction below
+// only guarantees the *first and last* word of a chunk line up with true
+// time — Gemini's sense of elapsed time can still drift non-uniformly in
+// between, and that residual bows further from real time the longer a
+// chunk runs before the next anchor point corrects it. A real downloaded
+// clip confirmed this directly: a growing multi-second gap within a single
+// chunk that endpoint-only correction couldn't fully remove. Shorter chunks
+// bound how far that drift can accumulate before it's corrected again, at
+// the cost of several times more Gemini requests per episode.
+const CHUNK_SEC = positiveInteger(process.env.TRANSCRIBE_CHUNK_SEC, 45);
 const TRANSCRIBE_CONCURRENCY = positiveInteger(process.env.TRANSCRIBE_CONCURRENCY, 3);
 // Without an explicit timeout, a stalled request just hangs indefinitely —
 // no error, no retry, the job sits on "Transcribing" forever. Cap it so a
