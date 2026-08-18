@@ -8,6 +8,7 @@ import { fileURLToPath } from "url";
 import { randomUUID } from "crypto";
 
 import { prepareSources, getVideoInfo } from "./lib/rapidapi.js";
+import { releaseRelay } from "./lib/videoRelay.js";
 import { createClip, ensureDir } from "./lib/ffmpeg.js";
 import { transcribeAudio } from "./lib/groqTranscribe.js";
 import { pickClips } from "./lib/clipPicker.js";
@@ -174,7 +175,7 @@ async function runPipeline(id, jobDir, { youtubeUrl, numClips, clipLengthSec, su
   // Only the (small, fast) audio track gets downloaded here — the video is
   // validated but never fetched in full; each clip render seeks directly
   // into its remote URL for just its own time window later.
-  const { audioPath, videoUrl, videoHeaders, durationSec } = await prepareSources(
+  const { audioPath, videoUrl, videoHeaders, videoRelayToken, durationSec } = await prepareSources(
     youtubeUrl,
     jobDir,
     (line) => {
@@ -269,6 +270,9 @@ async function runPipeline(id, jobDir, { youtubeUrl, numClips, clipLengthSec, su
     sourceTitle: info.title,
     clips: clipsOut.sort((a, b) => b.viralityScore - a.viralityScore),
   });
+
+  // All renders are finished with the source, so stop holding its relay entry.
+  releaseRelay(videoRelayToken);
 }
 
 // Clip renders are independent ffmpeg processes, so running a few at once

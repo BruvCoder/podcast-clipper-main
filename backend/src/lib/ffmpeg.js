@@ -89,6 +89,9 @@ export async function createClip(
     throw new Error(`Unknown cropMode: ${cropMode} (expected "pad" or "crop")`);
   }
 
+  // videoSource.url is a loopback relay URL (see videoRelay.js) — ffmpeg
+  // cannot fetch YouTube's CDN directly, so Node does that leg. Upstream
+  // headers are applied by the relay, not here.
   const videoInputArgs = [];
   if (videoSource.headers && Object.keys(videoSource.headers).length) {
     videoInputArgs.push("-headers", buildFfmpegHeaderString(videoSource.headers));

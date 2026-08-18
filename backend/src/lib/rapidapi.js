@@ -6,6 +6,7 @@ import { randomUUID } from "crypto";
 import { spawn } from "child_process";
 import { Transform } from "stream";
 import { pipeline } from "stream/promises";
+import { relayUrl, releaseRelay } from "./videoRelay.js";
 
 // Two providers, combined: one supplies a video stream and the other supplies
 // audio. The video endpoint returns every available format; we rank
@@ -33,6 +34,7 @@ const MAX_API_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_REDIRECTS = 5;
 const TARGET_SHORT_EDGE = 720;
 const MIN_MEDIA_DURATION_SEC = 1;
+
 
 function positiveInteger(value, fallback) {
   const parsed = Number.parseInt(value, 10);
@@ -831,25 +833,35 @@ export async function prepareSources(youtubeUrl, jobDir, onProgress) {
     emitProgress(onProgress, "Audio ready");
 
     emitProgress(onProgress, "Selecting a usable video source");
-    const { format, info: videoInfo } = await withVideoFormatFallbacks(
+    // Every candidate is probed (and later read) through the loopback relay:
+    // ffprobe/ffmpeg get 403 from YouTube's CDN even where Node succeeds on
+    // the identical URL, so Node has to be the one doing the upstream fetch.
+    const attempted = [];
+    const { format, info: videoInfo, relay } = await withVideoFormatFallbacks(
       formats,
       async (candidate) => {
         const headers = sanitizeRequestHeaders(candidate.http_headers || {});
-        const info = await assertValidMedia(candidate.url, "video", videoFormatLabel(candidate), {
-          headers,
-        });
+        const relay = await relayUrl(candidate.url, headers);
+        attempted.push(relay.token);
+        const info = await assertValidMedia(relay.url, "video", videoFormatLabel(candidate));
         assertCompatibleDurations(info, audioInfo);
-        return { format: candidate, info };
+        return { format: candidate, info, relay };
       },
       { onProgress }
     );
+
+    // Free the relay entries for candidates that lost, keeping only the winner.
+    for (const token of attempted) {
+      if (token !== relay.token) releaseRelay(token);
+    }
 
     emitProgress(onProgress, `Selected video ${videoFormatLabel(format)}`);
 
     return {
       audioPath,
-      videoUrl: format.url,
-      videoHeaders: sanitizeRequestHeaders(format.http_headers || {}),
+      videoUrl: relay.url,
+      videoRelayToken: relay.token,
+      videoHeaders: {},
       durationSec: Math.min(videoInfo.durationSec, audioInfo.durationSec),
     };
   } catch (err) {
