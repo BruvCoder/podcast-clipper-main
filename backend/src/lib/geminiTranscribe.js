@@ -3,6 +3,7 @@ import { spawn } from "child_process";
 import fs from "fs";
 import os from "os";
 import path from "path";
+import { withGeminiRetry } from "./geminiRetry.js";
 
 let client = null;
 function getClient() {
@@ -122,23 +123,27 @@ async function transcribeChunk(chunkPath) {
   const ai = getClient();
   const buffer = await fs.promises.readFile(chunkPath);
 
-  const response = await ai.models.generateContent({
-    model: MODEL,
-    contents: [
-      {
-        role: "user",
-        parts: [
-          { inlineData: { mimeType: "audio/mpeg", data: buffer.toString("base64") } },
-          { text: "Transcribe this audio with word-level timestamps." },
+  const response = await withGeminiRetry(
+    () =>
+      ai.models.generateContent({
+        model: MODEL,
+        contents: [
+          {
+            role: "user",
+            parts: [
+              { inlineData: { mimeType: "audio/mpeg", data: buffer.toString("base64") } },
+              { text: "Transcribe this audio with word-level timestamps." },
+            ],
+          },
         ],
-      },
-    ],
-    config: {
-      systemInstruction: SYSTEM_INSTRUCTION,
-      responseMimeType: "application/json",
-      responseSchema: WORDS_SCHEMA,
-    },
-  });
+        config: {
+          systemInstruction: SYSTEM_INSTRUCTION,
+          responseMimeType: "application/json",
+          responseSchema: WORDS_SCHEMA,
+        },
+      }),
+    { label: "Gemini transcription chunk" }
+  );
 
   const parsed = JSON.parse(response.text);
   return Array.isArray(parsed.words) ? parsed.words : [];

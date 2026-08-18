@@ -1,4 +1,5 @@
 import { GoogleGenAI } from "@google/genai";
+import { withGeminiRetry } from "./geminiRetry.js";
 
 let client = null;
 function getClient() {
@@ -124,15 +125,19 @@ ${transcriptText}
 
 Respond only with JSON matching the schema.`;
 
-  const response = await ai.models.generateContent({
-    model: MODEL,
-    contents: prompt,
-    config: {
-      systemInstruction: SYSTEM_INSTRUCTION,
-      responseMimeType: "application/json",
-      responseSchema: CLIP_PICK_SCHEMA,
-    },
-  });
+  const response = await withGeminiRetry(
+    () =>
+      ai.models.generateContent({
+        model: MODEL,
+        contents: prompt,
+        config: {
+          systemInstruction: SYSTEM_INSTRUCTION,
+          responseMimeType: "application/json",
+          responseSchema: CLIP_PICK_SCHEMA,
+        },
+      }),
+    { label: "Gemini clip selection" }
+  );
 
   const parsed = JSON.parse(response.text);
   const clips = (parsed.clips || []).sort((a, b) => b.viralityScore - a.viralityScore);
