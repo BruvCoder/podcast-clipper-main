@@ -73,7 +73,17 @@ decimal places. If the clip has no speech, return an empty "words" array.
 
 Respond only with JSON matching the provided schema.`;
 
-/** Cuts [startSec, startSec+durationSec) out of audioPath into outPath without re-encoding. */
+/**
+ * Cuts [startSec, startSec+durationSec) out of audioPath into outPath.
+ *
+ * Deliberately re-encodes instead of stream-copying: ffmpeg's `-accurate_seek`
+ * (on by default) only corrects a fast/approximate `-ss` seek down to the
+ * exact requested timestamp when the output is decoded, not when it's a raw
+ * stream copy. With `-c copy`, a chunk's *actual* start can silently drift
+ * from `startSec` — and since every word timestamp Gemini reports for this
+ * chunk gets offset by our assumed `startSec`, that drift would mislabel
+ * every word in the chunk against the true audio.
+ */
 function cutChunk(audioPath, startSec, durationSec, outPath) {
   return new Promise((resolve, reject) => {
     const proc = spawn("ffmpeg", [
@@ -84,8 +94,10 @@ function cutChunk(audioPath, startSec, durationSec, outPath) {
       audioPath,
       "-t",
       String(durationSec),
-      "-c",
-      "copy",
+      "-c:a",
+      "libmp3lame",
+      "-b:a",
+      "64k",
       outPath,
     ]);
     let stderr = "";
