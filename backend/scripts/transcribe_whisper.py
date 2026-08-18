@@ -30,7 +30,11 @@ def main():
     # on clean podcast audio. Override with WHISPER_BEAM_SIZE if picks start
     # looking mistranscribed and you'd rather trade speed for accuracy.
     beam_size = int(os.environ.get("WHISPER_BEAM_SIZE", "1"))
-    cpu_threads = int(os.environ.get("WHISPER_CPU_THREADS", str(os.cpu_count() or 4)))
+    # os.cpu_count() reflects the host machine's full core count, not this
+    # container's actual cgroup-limited share (can report 40+ on a shared
+    # host) — using it directly over-threads ctranslate2's inference and can
+    # OOM-kill this subprocess. Default to a small, safe fixed value instead.
+    cpu_threads = int(os.environ.get("WHISPER_CPU_THREADS", "2"))
 
     try:
         from faster_whisper import WhisperModel

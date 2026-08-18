@@ -18,6 +18,14 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const JOBS_DIR = path.join(__dirname, "..", "jobs");
 ensureDir(JOBS_DIR);
 
+// Node terminates the whole process on an unhandled promise rejection by
+// default — meaning one bad rejection anywhere would take down every other
+// in-flight job, not just the one that caused it. This is a backstop, not a
+// substitute for handling errors at the source (see selectionPromise below).
+process.on("unhandledRejection", (err) => {
+  console.error("Unhandled promise rejection:", err);
+});
+
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -191,6 +199,14 @@ async function runPipeline(id, jobDir, { youtubeUrl, numClips, clipLengthSec, su
 
       return { words, phrases, picks };
     })();
+
+    // selectionPromise isn't awaited until after downloadVideo() resolves,
+    // which can be much later — if it rejects before then, Node treats it as
+    // an unhandled rejection and crashes the whole process (taking every
+    // in-flight job down with it), not just this one. Attaching a no-op
+    // handler now marks it "handled" without changing what the real
+    // `await selectionPromise` below actually receives.
+    selectionPromise.catch(() => {});
   }
 
   updateJob(id, { stage: "Downloading video" });
