@@ -193,12 +193,23 @@ async function runPipeline(id, jobDir, { youtubeUrl, numClips, clipLengthSec, su
   const phrases = groupWordsIntoPhrases(words);
 
   updateJob(id, { stage: "Selecting and ranking best moments with Gemini" });
-  const picks = await pickClips(phrasesToPromptText(phrases), {
+  const rawPicks = await pickClips(phrasesToPromptText(phrases), {
     numClips,
     clipLengthSec,
     videoDurationSec,
   });
-  if (!picks.length) throw new Error("Gemini did not return any clip picks.");
+  // A transcript-timestamp anomaly (or a bad pick) could otherwise slip
+  // through as a near-instant, unusable "clip" — reject those outright
+  // rather than silently rendering a broken result.
+  const MIN_CLIP_SEC = 3;
+  const picks = rawPicks.filter((p) => p.end - p.start >= MIN_CLIP_SEC);
+  if (!picks.length) {
+    throw new Error(
+      rawPicks.length
+        ? `Gemini's clip picks were all shorter than ${MIN_CLIP_SEC}s — likely a transcription timing issue. Please try again.`
+        : "Gemini did not return any clip picks."
+    );
+  }
 
   const clipsOut = [];
   const clipsDir = ensureDir(path.join(jobDir, "clips"));

@@ -169,6 +169,67 @@ async function transcribeChunk(chunkPath) {
   return Array.isArray(parsed.words) ? parsed.words : [];
 }
 
+// Despite being told timestamps "must be non-decreasing", Gemini's per-word
+// timing occasionally resets partway through a chunk's response — the
+// transcribed text stays correct and coherent, but the reported time jumps
+// sharply backward (e.g. keeps transcribing forward in the audio while its
+// self-reported clock resets close to zero). A small amount of backward
+// jitter at natural word boundaries is normal; anything beyond that is this
+// failure mode, and would otherwise poison offset math, clip selection, and
+// ultimately produce clips that don't match their own captions.
+const TIMESTAMP_REGRESSION_TOLERANCE_SEC = 1.5;
+
+function findRegressionIndex(words) {
+  let maxEnd = -Infinity;
+  for (let i = 0; i < words.length; i++) {
+    if (words[i].start < maxEnd - TIMESTAMP_REGRESSION_TOLERANCE_SEC) return i;
+    maxEnd = Math.max(maxEnd, words[i].end);
+  }
+  return -1;
+}
+
+// Separately from backward jumps, Gemini's self-reported per-word timing
+// doesn't reliably calibrate to the clip's true wall-clock length — observed
+// directly: a verified-exactly-20.000s chunk came back with its last word
+// ending at 30.13s (~50% over), while staying perfectly internally
+// monotonic the whole time, so the regression check above can't catch it.
+// Since we know each chunk's true duration exactly (we cut it ourselves),
+// rescale the reported timestamps to fit it whenever they overshoot by more
+// than a small tolerance — this is what turns an inflated-but-ordered
+// sequence back into one that lines up with the real audio.
+function rescaleToFitDuration(words, trueDurationSec, toleranceRatio = 1.05) {
+  if (!words.length) return words;
+  const reportedMaxEnd = Math.max(...words.map((w) => w.end));
+  if (reportedMaxEnd <= 0 || reportedMaxEnd <= trueDurationSec * toleranceRatio) return words;
+  const scale = trueDurationSec / reportedMaxEnd;
+  return words.map((w) => ({ ...w, start: w.start * scale, end: w.end * scale }));
+}
+
+/**
+ * Transcribes one chunk, retrying the whole chunk from scratch (a fresh
+ * Gemini call is a fresh chance at clean timestamps) if a backward-jump
+ * regression is detected, then rescales the result to the chunk's true
+ * duration to correct for timestamp inflation. If retries still won't come
+ * back clean, truncates at the regression point rather than returning
+ * corrupted timestamps — losing the rest of that chunk's transcript is far
+ * better than mislabeling it.
+ */
+async function transcribeChunkReliably(chunkPath, trueDurationSec, { attempts = 3 } = {}) {
+  let best = [];
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    const words = await transcribeChunk(chunkPath);
+    const regressionAt = findRegressionIndex(words);
+    if (regressionAt === -1) return rescaleToFitDuration(words, trueDurationSec);
+
+    console.warn(
+      `Transcription chunk had a timestamp regression at word ${regressionAt} of ${words.length} ` +
+        `(attempt ${attempt}/${attempts}), retrying`
+    );
+    if (words.slice(0, regressionAt).length > best.length) best = words.slice(0, regressionAt);
+  }
+  return rescaleToFitDuration(best, trueDurationSec);
+}
+
 async function mapWithConcurrency(items, limit, worker) {
   let nextIndex = 0;
   async function runWorker() {
@@ -202,7 +263,7 @@ export async function transcribeAudio(audioPath) {
       const chunkPath = path.join(tmpDir, `chunk_${i}.mp3`);
       try {
         await cutChunk(audioPath, start, duration, chunkPath);
-        const words = await transcribeChunk(chunkPath);
+        const words = await transcribeChunkReliably(chunkPath, duration);
         chunkWords[i] = words
           .map((w) => ({
             word: String(w.word || "").trim(),
