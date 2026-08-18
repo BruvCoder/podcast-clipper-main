@@ -31,7 +31,9 @@ const FFMPEG_TIMEOUT_MS = positiveInteger(process.env.FFMPEG_TIMEOUT_MS, 30 * 60
 const METADATA_TIMEOUT_MS = positiveInteger(process.env.METADATA_TIMEOUT_MS, 15_000);
 const MAX_API_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_REDIRECTS = 5;
-const TARGET_SHORT_EDGE = 720;
+// Lower = smaller/faster source download, at the cost of a blurrier upscale
+// once it's stretched to the 1080x1920 output frame. Override if needed.
+const TARGET_SHORT_EDGE = positiveInteger(process.env.TARGET_SHORT_EDGE, 480);
 const MIN_MEDIA_DURATION_SEC = 1;
 
 function positiveInteger(value, fallback) {
