@@ -51,6 +51,20 @@ app.get("/files/:jobId/clips/:fileName", (req, res, next) => {
   });
 });
 
+// Unauthenticated health check that reports which build is actually running.
+// Deploys here are triggered manually, so "did my change ship?" is otherwise
+// unanswerable without dashboard access — this makes it checkable with curl.
+const STARTED_AT = new Date().toISOString();
+app.get("/api/health", (req, res) => {
+  res.json({
+    ok: true,
+    commit: (process.env.RAILWAY_GIT_COMMIT_SHA || "unknown").slice(0, 7),
+    branch: process.env.RAILWAY_GIT_BRANCH || "unknown",
+    startedAt: STARTED_AT,
+    uptimeSec: Math.round(process.uptime()),
+  });
+});
+
 // Jobs live in memory for fast access, backed by a job.json file per job dir
 // so history survives backend restarts and is available to a user from any
 // device (it's keyed by Firebase uid and served from this one backend).
