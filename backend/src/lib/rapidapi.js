@@ -34,6 +34,10 @@ const MAX_API_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_REDIRECTS = 5;
 const TARGET_SHORT_EDGE = 720;
 const MIN_MEDIA_DURATION_SEC = 1;
+// A long episode's server-side mp3 conversion can lag well behind the
+// provider reporting "ok", so these waits are deliberately generous.
+const AUDIO_LINK_ATTEMPTS = positiveInteger(process.env.AUDIO_LINK_ATTEMPTS, 8);
+const AUDIO_LINK_WAIT_MS = positiveInteger(process.env.AUDIO_LINK_WAIT_MS, 6_000);
 const AUDIO_DOWNLOAD_ATTEMPTS = positiveInteger(process.env.AUDIO_DOWNLOAD_ATTEMPTS, 3);
 
 
@@ -765,6 +769,44 @@ async function fetchAudioTrack(videoId, { attempts = 6, intervalMs = 2_000, sign
   );
 }
 
+/** True if a URL actually serves bytes right now (not just advertised). */
+async function linkIsFetchable(url) {
+  try {
+    const res = await fetch(url, { headers: { Range: "bytes=0-64" }, redirect: "follow" });
+    res.body?.cancel?.();
+    return res.status === 206 || res.status === 200;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Gets an audio link that is verified to actually serve bytes.
+ *
+ * The provider reports status "ok" with a link before the converted file is
+ * reachable — that link 404s, which failed whole jobs. Longer videos take
+ * longer to convert, so this probes the link and waits for a fresh one
+ * rather than trusting the "ok".
+ */
+async function resolveAudioLink(videoId, { onProgress } = {}) {
+  let lastLink = null;
+  for (let attempt = 1; attempt <= AUDIO_LINK_ATTEMPTS; attempt++) {
+    const meta = await fetchAudioTrack(videoId);
+    lastLink = meta.link;
+    if (await linkIsFetchable(meta.link)) return meta.link;
+
+    if (attempt < AUDIO_LINK_ATTEMPTS) {
+      emitProgress(
+        onProgress,
+        `Audio file is not ready yet (attempt ${attempt} of ${AUDIO_LINK_ATTEMPTS}); waiting for the provider`
+      );
+      await new Promise((resolve) => setTimeout(resolve, AUDIO_LINK_WAIT_MS));
+    }
+  }
+  // Hand back the last link anyway so the download's own error surfaces.
+  return lastLink;
+}
+
 /** Tries each ranked candidate in order, skipping to the next on a normal failure but stopping immediately on a machine-wide one (disk full, out of memory, etc). */
 async function withVideoFormatFallbacks(formats, attempt, { onProgress } = {}) {
   const failures = [];
@@ -827,44 +869,46 @@ export async function prepareSources(youtubeUrl, jobDir, onProgress) {
   const audioPath = path.join(jobDir, "audio.mp3");
 
   try {
-    emitProgress(onProgress, "Requesting available video formats and audio track");
+emitProgress(onProgress, "Requesting available video formats");
     const metadataController = new AbortController();
     const formatTask = fetchVideoOnlyFormats(videoId, { signal: metadataController.signal });
-    const audioMetadataTask = fetchAudioTrack(videoId, { signal: metadataController.signal });
     let formats;
-    let audioMeta;
     try {
-      [formats, audioMeta] = await Promise.all([formatTask, audioMetadataTask]);
+      formats = await formatTask;
     } catch (err) {
       metadataController.abort(new Error("Cancelling the other provider request after a failure"));
-      await Promise.allSettled([formatTask, audioMetadataTask]);
+      await Promise.allSettled([formatTask]);
       throw err;
     }
     emitProgress(onProgress, `Found ${formats.length} usable video format${formats.length === 1 ? "" : "s"}`);
 
-    // The audio link points at a third-party CDN and carries an expiry, and
-    // the provider can report status "ok" before the file is actually
-    // fetchable — which shows up as a 404 partway through a job. A fresh
-    // link usually works, so re-request one rather than failing outright.
+    // Audio deliberately comes from the mp3 provider rather than the same
+    // googlevideo source as the video: that source rate-limits audio far
+    // harder (measured at 0.04 MB/s before refusing entirely), while the
+    // provider serves its own converted file with no such throttle. Its one
+    // weakness — advertising a link before the file is reachable — is
+    // handled by verifying the link first.
     emitProgress(onProgress, "Downloading audio track");
     let audioInfo = null;
-    let audioLink = audioMeta.link;
+    let lastAudioErr = null;
     for (let attempt = 1; attempt <= AUDIO_DOWNLOAD_ATTEMPTS; attempt++) {
+      const audioLink = await resolveAudioLink(videoId, { onProgress });
       try {
         await downloadToFile(audioLink, audioPath, { onProgress, label: "Audio track" });
         audioInfo = await assertValidMedia(audioPath, "audio", "Audio");
         break;
       } catch (err) {
-        if (attempt === AUDIO_DOWNLOAD_ATTEMPTS) throw err;
-        emitProgress(
-          onProgress,
-          `Audio download attempt ${attempt} failed (${err.message.slice(0, 80)}); requesting a fresh link`
-        );
-        await new Promise((resolve) => setTimeout(resolve, 1500 * attempt));
-        const refreshed = await fetchAudioTrack(videoId);
-        audioLink = refreshed.link;
+        lastAudioErr = err;
+        if (attempt < AUDIO_DOWNLOAD_ATTEMPTS) {
+          emitProgress(
+            onProgress,
+            `Audio download attempt ${attempt} failed (${err.message.slice(0, 80)}); retrying`
+          );
+          await new Promise((resolve) => setTimeout(resolve, AUDIO_LINK_WAIT_MS));
+        }
       }
     }
+    if (!audioInfo) throw lastAudioErr || new Error("The audio track could not be downloaded.");
     emitProgress(onProgress, "Audio ready");
 
     emitProgress(onProgress, "Selecting a usable video source");
