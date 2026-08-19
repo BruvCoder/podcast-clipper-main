@@ -68,7 +68,20 @@
       "Bash(node --check src/lib/clipPicker.js)",
       "Bash(node --check src/lib/groqClient.js)",
       "Bash(ffmpeg -y -i __e2e.wav -ac 1 -ar 16000 -b:a 64k __e2e.mp3)",
-      "Bash(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 __e2e.mp3)"
+      "Bash(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 __e2e.mp3)",
+      "Read(//c/Users/Goito/AppData/Local/Temp/claude/C--Users-Goito-Downloads-podcast-clipper-main-podcast-clipper-main/75290f27-cfa0-459b-acb0-86f69ea1b5fd/scratchpad/**)",
+      "Bash(node proxytest.mjs)",
+      "Bash(node --check src/lib/videoRelay.js)",
+      "Bash(cp \"/c/Users/Goito/AppData/Local/Temp/claude/C--Users-Goito-Downloads-podcast-clipper-main-podcast-clipper-main/75290f27-cfa0-459b-acb0-86f69ea1b5fd/scratchpad/rendertest.mjs\" ./__rendertest.mjs)",
+      "Bash(node __rendertest.mjs dQw4w9WgXcQ 120 10)",
+      "Bash(ffprobe -v error -show_entries format=duration,size -show_entries stream=index,codec_type,codec_name,width,height,duration -of default=noprint_wrappers=1 \"/c/Users/Goito/Downloads/Yall Read That Wrong  The Real Meaning of John 1010.mp4\")",
+      "Bash(node __rendertest.mjs 5qap5aO4i9A 900 40)",
+      "Bash(node __rendertest.mjs dQw4w9WgXcQ 60 40)",
+      "Bash(node __rangeprobe.mjs)",
+      "Bash(node __audiotest.mjs \"https://www.youtube.com/watch?v=dQw4w9WgXcQ\")",
+      "Bash(node __audioprobe.mjs -p8ZQ4XJlso)",
+      "Bash(node __audiotest.mjs \"https://www.youtube.com/watch?v=-p8ZQ4XJlso\")",
+      "Bash(node __fulltest.mjs \"https://www.youtube.com/watch?v=-p8ZQ4XJlso\")"
     ]
   }
 }

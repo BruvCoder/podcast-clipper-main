@@ -21,3 +21,6 @@ backend/jobs/*
 !backend/jobs/.gitkeep
 *.log
 .DS_Store
+
+# Local scratch/diagnostic scripts
+**/__*
