@@ -20,10 +20,18 @@ import { randomBytes } from "crypto";
 // Bound to loopback with an unguessable per-source token, so this is not an
 // open proxy: only URLs this process registered can be reached through it.
 
-const CHUNK_BYTES = Number.parseInt(process.env.VIDEO_RELAY_CHUNK_BYTES, 10) || 512 * 1024;
+// Upstream applies a cumulative throttle, not a flat size cap. Measured on a
+// real URL: from a cold start any size up to 1MB is served, but after ~7MB
+// has been delivered, 256KB+ requests start returning 403 while 64-128KB
+// requests keep succeeding. 128KB therefore keeps working for the whole of a
+// long read, where 512KB dies partway through and corrupts the render.
+const CHUNK_BYTES = Number.parseInt(process.env.VIDEO_RELAY_CHUNK_BYTES, 10) || 128 * 1024;
 // How many chunk requests to keep in flight. Upstream latency dominates, so
-// this is the main lever on render speed.
-const READ_AHEAD = Number.parseInt(process.env.VIDEO_RELAY_READ_AHEAD, 10) || 8;
+// this is the main lever on render speed — but too many at once gets
+// rate-limited, so it trades against reliability.
+const READ_AHEAD = Number.parseInt(process.env.VIDEO_RELAY_READ_AHEAD, 10) || 6;
+const CHUNK_ATTEMPTS = Number.parseInt(process.env.VIDEO_RELAY_CHUNK_ATTEMPTS, 10) || 4;
+const RETRYABLE_CHUNK_STATUS = new Set([403, 408, 429, 500, 502, 503, 504]);
 
 const relay = {
   server: null,
@@ -111,16 +119,34 @@ function startServer() {
           spans.push([pos, Math.min(pos + CHUNK_BYTES - 1, end)]);
         }
 
-        const fetchSpan = ([from, to]) =>
-          fetch(source.url, {
-            headers: { ...source.headers, Range: `bytes=${from}-${to}` },
-            redirect: "follow",
-          }).then(async (upstream) => {
-            if (upstream.status !== 206 && upstream.status !== 200) {
-              throw new Error(`upstream chunk ${from}-${to} failed with HTTP ${upstream.status}`);
+        // Upstream rate-limits when several chunk requests land at once, so a
+        // chunk failing is expected occasionally rather than fatal. Retry it
+        // before giving up — losing one chunk corrupts the whole stream.
+        const fetchSpan = async ([from, to]) => {
+          let lastErr;
+          for (let attempt = 1; attempt <= CHUNK_ATTEMPTS; attempt++) {
+            if (aborted) throw new Error("client aborted");
+            try {
+              const upstream = await fetch(source.url, {
+                headers: { ...source.headers, Range: `bytes=${from}-${to}` },
+                redirect: "follow",
+              });
+              if (upstream.status === 206 || upstream.status === 200) {
+                return Buffer.from(await upstream.arrayBuffer());
+              }
+              lastErr = new Error(`upstream chunk ${from}-${to} failed with HTTP ${upstream.status}`);
+              if (!RETRYABLE_CHUNK_STATUS.has(upstream.status)) throw lastErr;
+            } catch (err) {
+              lastErr = err;
             }
-            return Buffer.from(await upstream.arrayBuffer());
-          });
+            if (attempt < CHUNK_ATTEMPTS) {
+              // Back off generously: these 403s are a throttle, so the useful
+              // response is to wait it out rather than retry immediately.
+              await new Promise((r) => setTimeout(r, 500 * 2 ** (attempt - 1) + Math.random() * 250));
+            }
+          }
+          throw lastErr;
+        };
 
         const inFlight = new Map();
         const schedule = (index) => {
@@ -145,8 +171,17 @@ function startServer() {
         res.end();
       } catch (err) {
         if (aborted) return; // ffmpeg moved on; not an error worth surfacing
-        if (!res.headersSent) res.writeHead(502);
-        res.end(`relay error: ${err.message}`);
+        if (!res.headersSent) {
+          res.writeHead(502);
+          res.end(`relay error: ${err.message}`);
+          return;
+        }
+        // Headers (including Content-Length) are already sent, so ending
+        // cleanly here would hand ffmpeg a silently truncated file — it then
+        // renders an audio-only clip and still exits 0. Destroying the socket
+        // makes ffmpeg treat it as the read error it actually is.
+        console.error(`Video relay failed mid-stream: ${err.message}`);
+        res.destroy(err);
       }
     });
 

@@ -705,19 +705,33 @@ function videoFormatLabel(format) {
   return `${resolution} ${codec}${id != null ? ` (format ${id})` : ""}`;
 }
 
-/** Requests the provider's complete video-only format list. */
+// The provider's `filter` values are not stable: `videoonly` returned a full
+// format list for months, then began returning a single audio-only entry
+// (HTTP 200, no error), which surfaced as "no usable formats" on every job.
+// Try the known-good variants in order rather than trusting one of them.
+const FORMAT_FILTERS = ["video", "videoonly", ""];
+
+/** Requests the provider's video format list, tolerating filter changes. */
 async function fetchVideoOnlyFormats(videoId, { signal } = {}) {
-  const data = await rapidApiGet(
-    VIDEO_HOST,
-    `/download?id=${encodeURIComponent(videoId)}&filter=videoonly`,
-    { signal }
-  );
-  const formats = rankVideoFormats(data);
-  if (!formats.length) {
-    const detail = data?.error || data?.message || data?.msg;
-    throw new Error(detail || "Video provider returned no direct video-only formats.");
+  let lastData = null;
+  for (const filter of FORMAT_FILTERS) {
+    const query = filter ? `&filter=${encodeURIComponent(filter)}` : "";
+    let data;
+    try {
+      data = await rapidApiGet(VIDEO_HOST, `/download?id=${encodeURIComponent(videoId)}${query}`, {
+        signal,
+      });
+    } catch (err) {
+      if (signal?.aborted) throw err;
+      continue; // try the next filter rather than failing the whole job
+    }
+    lastData = data;
+    const formats = rankVideoFormats(data);
+    if (formats.length) return formats;
   }
-  return formats;
+
+  const detail = lastData?.error || lastData?.message || lastData?.msg;
+  throw new Error(detail || "Video provider returned no usable video formats.");
 }
 
 /** Requests the mp3 audio track, polling briefly since conversion happens server-side. */

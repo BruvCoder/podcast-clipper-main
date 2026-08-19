@@ -142,7 +142,61 @@ export async function createClip(
   ]);
 
   fs.unlinkSync(assPath);
+  await assertRenderedClip(outPath, duration);
   return outPath;
+}
+
+/** Reads a rendered file's stream types and duration via ffprobe. */
+function probeRendered(filePath) {
+  return new Promise((resolve, reject) => {
+    const proc = spawn("ffprobe", [
+      "-v",
+      "error",
+      "-show_entries",
+      "format=duration:stream=codec_type",
+      "-of",
+      "json",
+      filePath,
+    ]);
+    let stdout = "";
+    let stderr = "";
+    proc.stdout.on("data", (d) => (stdout += d.toString()));
+    proc.stderr.on("data", (d) => (stderr += d.toString()));
+    proc.on("error", (err) => reject(new Error(`Failed to start ffprobe: ${err.message}`)));
+    proc.on("close", (code) => {
+      if (code !== 0) return reject(new Error(`ffprobe failed on the rendered clip: ${stderr.trim().slice(-300)}`));
+      try {
+        resolve(JSON.parse(stdout));
+      } catch (err) {
+        reject(new Error(`ffprobe returned invalid JSON for the rendered clip: ${err.message}`));
+      }
+    });
+  });
+}
+
+/**
+ * ffmpeg can exit 0 having written a clip with no video in it — that is what
+ * a truncated read from the video source produces, and it shipped an
+ * audio-only "clip" to a user before this check existed. A render is only
+ * finished if it actually contains both streams and is about as long as asked.
+ */
+async function assertRenderedClip(outPath, expectedDurationSec) {
+  const info = await probeRendered(outPath);
+  const kinds = new Set((info.streams || []).map((s) => s.codec_type));
+  if (!kinds.has("video")) {
+    throw new Error(
+      "Rendered clip has no video stream — the video source was likely truncated mid-read. Please retry."
+    );
+  }
+  if (!kinds.has("audio")) {
+    throw new Error("Rendered clip has no audio stream.");
+  }
+  const actual = Number(info?.format?.duration);
+  if (Number.isFinite(actual) && actual < expectedDurationSec * 0.5) {
+    throw new Error(
+      `Rendered clip is ${actual.toFixed(1)}s but ${expectedDurationSec.toFixed(1)}s was requested — the source read was cut short. Please retry.`
+    );
+  }
 }
 
 function secondsToAssTimestamp(seconds) {
