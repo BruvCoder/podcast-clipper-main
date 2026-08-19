@@ -34,6 +34,7 @@ const MAX_API_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_REDIRECTS = 5;
 const TARGET_SHORT_EDGE = 720;
 const MIN_MEDIA_DURATION_SEC = 1;
+const AUDIO_DOWNLOAD_ATTEMPTS = positiveInteger(process.env.AUDIO_DOWNLOAD_ATTEMPTS, 3);
 
 
 function positiveInteger(value, fallback) {
@@ -841,9 +842,29 @@ export async function prepareSources(youtubeUrl, jobDir, onProgress) {
     }
     emitProgress(onProgress, `Found ${formats.length} usable video format${formats.length === 1 ? "" : "s"}`);
 
+    // The audio link points at a third-party CDN and carries an expiry, and
+    // the provider can report status "ok" before the file is actually
+    // fetchable — which shows up as a 404 partway through a job. A fresh
+    // link usually works, so re-request one rather than failing outright.
     emitProgress(onProgress, "Downloading audio track");
-    await downloadToFile(audioMeta.link, audioPath, { onProgress, label: "Audio track" });
-    const audioInfo = await assertValidMedia(audioPath, "audio", "Audio");
+    let audioInfo = null;
+    let audioLink = audioMeta.link;
+    for (let attempt = 1; attempt <= AUDIO_DOWNLOAD_ATTEMPTS; attempt++) {
+      try {
+        await downloadToFile(audioLink, audioPath, { onProgress, label: "Audio track" });
+        audioInfo = await assertValidMedia(audioPath, "audio", "Audio");
+        break;
+      } catch (err) {
+        if (attempt === AUDIO_DOWNLOAD_ATTEMPTS) throw err;
+        emitProgress(
+          onProgress,
+          `Audio download attempt ${attempt} failed (${err.message.slice(0, 80)}); requesting a fresh link`
+        );
+        await new Promise((resolve) => setTimeout(resolve, 1500 * attempt));
+        const refreshed = await fetchAudioTrack(videoId);
+        audioLink = refreshed.link;
+      }
+    }
     emitProgress(onProgress, "Audio ready");
 
     emitProgress(onProgress, "Selecting a usable video source");
