@@ -65,6 +65,42 @@ app.get("/api/health", (req, res) => {
   });
 });
 
+// TEMPORARY diagnostic: the audio CDN link works from a residential
+// connection but 404s from this host, and there is no other way to observe
+// what the deployed container actually sees. Remove once resolved.
+app.get("/api/diag/audio", async (req, res) => {
+  const videoId = String(req.query.id || "-p8ZQ4XJlso");
+  const out = { videoId };
+  try {
+    const ipRes = await fetch("https://api.ipify.org?format=json");
+    out.egressIp = (await ipRes.json()).ip;
+  } catch (err) {
+    out.egressIp = `error: ${err.message}`;
+  }
+  try {
+    const host = process.env.AUDIO_RAPIDAPI_HOST || "youtube-mp36.p.rapidapi.com";
+    const meta = await fetch(`https://${host}/dl?id=${encodeURIComponent(videoId)}`, {
+      headers: { "x-rapidapi-key": process.env.RAPIDAPI_KEY, "x-rapidapi-host": host },
+    }).then((r) => r.json());
+    out.providerStatus = meta.status;
+    out.linkHost = meta.link ? new URL(meta.link).host : null;
+
+    if (meta.link) {
+      const ranged = await fetch(meta.link, { headers: { Range: "bytes=0-64" } });
+      ranged.body?.cancel?.();
+      out.rangeGet = ranged.status;
+
+      const plain = await fetch(meta.link);
+      plain.body?.cancel?.();
+      out.plainGet = plain.status;
+      out.contentType = plain.headers.get("content-type");
+    }
+  } catch (err) {
+    out.error = err.message;
+  }
+  res.json(out);
+});
+
 // Jobs live in memory for fast access, backed by a job.json file per job dir
 // so history survives backend restarts and is available to a user from any
 // device (it's keyed by Firebase uid and served from this one backend).
