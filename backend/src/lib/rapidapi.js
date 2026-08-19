@@ -7,6 +7,7 @@ import { spawn } from "child_process";
 import { Transform } from "stream";
 import { pipeline } from "stream/promises";
 import { relayUrl, releaseRelay } from "./videoRelay.js";
+import { mediaAgent, mediaFetch } from "./mediaProxy.js";
 
 // Two providers, combined: one supplies a video stream and the other supplies
 // audio. The video endpoint returns every available format; we rank
@@ -294,7 +295,8 @@ function requestDownloadResponse(url, { headers, signal }) {
     };
     const onAbort = () => req?.destroy(abortError(signal));
 
-    req = client.get(url, { headers }, (res) => finish(null, res));
+    const agent = mediaAgent();
+    req = client.get(url, agent ? { headers, agent } : { headers }, (res) => finish(null, res));
     signal?.addEventListener("abort", onAbort, { once: true });
     req.setTimeout(DOWNLOAD_INACTIVITY_TIMEOUT_MS, () => {
       req.destroy(
@@ -772,7 +774,7 @@ async function fetchAudioTrack(videoId, { attempts = 6, intervalMs = 2_000, sign
 /** True if a URL actually serves bytes right now (not just advertised). */
 async function linkIsFetchable(url) {
   try {
-    const res = await fetch(url, { headers: { Range: "bytes=0-64" }, redirect: "follow" });
+    const res = await mediaFetch(url, { headers: { Range: "bytes=0-64" }, redirect: "follow" });
     res.body?.cancel?.();
     return res.status === 206 || res.status === 200;
   } catch {

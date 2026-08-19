@@ -1,5 +1,6 @@
 import http from "http";
 import { randomBytes } from "crypto";
+import { mediaFetch } from "./mediaProxy.js";
 
 // YouTube's CDN refuses large or open-ended range requests on these URLs.
 // Measured directly against a real URL:
@@ -42,7 +43,7 @@ const relay = {
 /** Asks upstream for one byte to learn the resource's total length. */
 async function fetchTotalBytes(source) {
   if (source.totalBytes != null) return source.totalBytes;
-  const res = await fetch(source.url, {
+  const res = await mediaFetch(source.url, {
     headers: { ...source.headers, Range: "bytes=0-0" },
     redirect: "follow",
   });
@@ -127,7 +128,7 @@ function startServer() {
           for (let attempt = 1; attempt <= CHUNK_ATTEMPTS; attempt++) {
             if (aborted) throw new Error("client aborted");
             try {
-              const upstream = await fetch(source.url, {
+              const upstream = await mediaFetch(source.url, {
                 headers: { ...source.headers, Range: `bytes=${from}-${to}` },
                 redirect: "follow",
               });
