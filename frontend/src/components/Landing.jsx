@@ -73,7 +73,7 @@ export default function Landing({ onGetStarted }) {
         <div className="brand">
           <Waveform className="brand-mark" bars={5} />
           <span className="brand-name">
-            Podcast<span className="brand-accent">Clipper</span>
+            VOD<span className="brand-accent">Clipper</span>
           </span>
         </div>
         <button className="btn-ghost" onClick={onGetStarted}>

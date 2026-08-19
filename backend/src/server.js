@@ -218,6 +218,30 @@ app.get("/api/jobs/:id", requireAuth, (req, res) => {
   res.json(job);
 });
 
+app.delete("/api/jobs/:id", requireAuth, async (req, res, next) => {
+  const { id } = req.params;
+  const job = jobs.get(id);
+  if (!job) return res.status(404).json({ error: "Job not found." });
+  if (job.uid !== req.uid) {
+    return res.status(403).json({ error: "This job belongs to a different account." });
+  }
+
+  jobs.delete(id);
+  try {
+    // Remove the rendered clips and job metadata too — otherwise deleting
+    // from the sidebar would leave the files occupying the volume forever.
+    // The id is a server-generated uuid, and resolve()/startsWith guards
+    // against it ever escaping the jobs directory.
+    const jobDir = path.resolve(JOBS_DIR, id);
+    if (jobDir.startsWith(path.resolve(JOBS_DIR) + path.sep)) {
+      await fs.promises.rm(jobDir, { recursive: true, force: true });
+    }
+    res.json({ deleted: id });
+  } catch (err) {
+    next(err);
+  }
+});
+
 async function runPipeline(id, jobDir, { youtubeUrl, numClips, clipLengthSec, subtitleColor, cropMode }) {
   updateJob(id, { status: "running", stage: "Fetching video info" });
   const info = await getVideoInfo(youtubeUrl);

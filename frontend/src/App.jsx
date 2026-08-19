@@ -7,7 +7,7 @@ import Landing from "./components/Landing.jsx";
 import Auth from "./components/Auth.jsx";
 import Sidebar from "./components/Sidebar.jsx";
 import { useAuth } from "./AuthContext.jsx";
-import { createJob, getJob, listJobs } from "./api.js";
+import { createJob, getJob, listJobs, deleteJob } from "./api.js";
 
 const THEME_KEY = "pc-theme";
 function getInitialTheme() {
@@ -95,6 +95,14 @@ export default function App() {
         setMainStep("error");
       }
     }, 2000);
+  }
+
+  async function handleDeleteJob(id) {
+    await deleteJob(id);
+    setJobsList((prev) => prev.filter((j) => j.id !== id));
+    // Deleting whatever is on screen would leave it showing clips whose
+    // files no longer exist, so send the user back to a clean state.
+    if (id === activeJobId) handleNewClip();
   }
 
   function handleNewClip() {
@@ -186,6 +194,7 @@ export default function App() {
             activeJobId={activeJobId}
             onSelectJob={handleSelectHistoryJob}
             onNewClip={handleNewClip}
+            onDeleteJob={handleDeleteJob}
             open={sidebarOpen}
             onClose={() => setSidebarOpen(false)}
           />

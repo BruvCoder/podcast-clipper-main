@@ -35,6 +35,16 @@ export async function getJob(jobId) {
   return data;
 }
 
+export async function deleteJob(jobId) {
+  const res = await fetch(`${API_BASE_URL}/api/jobs/${jobId}`, {
+    method: "DELETE",
+    headers: await authHeaders(),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Failed to delete this clip");
+  return data;
+}
+
 export async function listJobs() {
   const res = await fetch(`${API_BASE_URL}/api/jobs`, { headers: await authHeaders() });
   const data = await res.json();

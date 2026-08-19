@@ -1485,6 +1485,7 @@ input[type="range"]::-moz-range-thumb {
 }
 
 .history-item {
+  position: relative;
   display: flex;
   align-items: flex-start;
   gap: 9px;
@@ -1495,7 +1496,51 @@ input[type="range"]::-moz-range-thumb {
   border-radius: var(--radius-sm);
   padding: 9px 8px;
   font-weight: 400;
+  cursor: pointer;
   transition: background 0.12s ease;
+}
+
+.history-delete {
+  flex-shrink: 0;
+  align-self: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 6px;
+  min-width: 26px;
+  height: 24px;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-weight: 600;
+  /* Hidden until the row is hovered, so the list stays uncluttered —
+     but always present for keyboard users. */
+  opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+
+.history-item:hover .history-delete,
+.history-delete:focus-visible,
+.history-delete.confirming {
+  opacity: 1;
+}
+
+.history-delete:hover {
+  color: var(--danger);
+  background: var(--danger-bg);
+}
+
+.history-delete.confirming {
+  color: var(--danger);
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-border);
+}
+
+.history-delete:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .history-item:hover {
