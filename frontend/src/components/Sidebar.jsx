@@ -13,7 +13,18 @@ function timeAgo(ts) {
   return `${day}d ago`;
 }
 
-export default function Sidebar({ jobs, activeJobId, onSelectJob, onNewClip, onDeleteJob, open, onClose }) {
+export default function Sidebar({
+  jobs,
+  activeJobId,
+  onSelectJob,
+  onNewClip,
+  onDeleteJob,
+  billing,
+  billingAction,
+  onManageBilling,
+  open,
+  onClose,
+}) {
   const { user, signOut } = useAuth();
   // Two-step delete: the trash icon arms, a second click confirms. Avoids a
   // modal for a small action while still not deleting on a stray click.
@@ -96,6 +107,24 @@ export default function Sidebar({ jobs, activeJobId, onSelectJob, onNewClip, onD
             </div>
           ))}
         </div>
+
+        {billing?.enabled && (
+          <div className="sidebar-plan">
+            <div className="sidebar-plan-copy">
+              <span className="sidebar-plan-name">{billing.planName || "Pro plan"}</span>
+              <span className="sidebar-plan-status">
+                {(billing.status || billing.subscriptionStatus) === "trialing" ? "Trial active" : "Subscription active"}
+              </span>
+            </div>
+            <button
+              className="sidebar-plan-button"
+              onClick={onManageBilling}
+              disabled={billingAction === "portal"}
+            >
+              {billingAction === "portal" ? "Opening…" : "Manage"}
+            </button>
+          </div>
+        )}
 
         <div className="sidebar-account">
           <div className="account-avatar">{(user?.email || "?")[0].toUpperCase()}</div>

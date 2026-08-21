@@ -6,6 +6,7 @@ import fs from "fs";
 import os from "os";
 import { fileURLToPath } from "url";
 import { randomUUID } from "crypto";
+import Stripe from "stripe";
 
 import { prepareSources, getVideoInfo } from "./lib/rapidapi.js";
 import { releaseRelay } from "./lib/videoRelay.js";
@@ -13,11 +14,22 @@ import { createClip, ensureDir } from "./lib/ffmpeg.js";
 import { transcribeAudio } from "./lib/groqTranscribe.js";
 import { pickClips } from "./lib/clipPicker.js";
 import { groupWordsIntoPhrases, phrasesToPromptText } from "./lib/transcript.js";
-import { requireAuth } from "./lib/firebaseAdmin.js";
+import { getFirebaseAuth, requireAuth } from "./lib/firebaseAdmin.js";
+import { createStripeBilling, loadStripeBillingConfig } from "./lib/stripeBilling.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const JOBS_DIR = path.join(__dirname, "..", "jobs");
 ensureDir(JOBS_DIR);
+
+const billingConfig = loadStripeBillingConfig();
+const stripe = billingConfig.enabled
+  ? new Stripe(billingConfig.secretKey, { maxNetworkRetries: 2, timeout: 20_000 })
+  : null;
+const billing = createStripeBilling({
+  stripe,
+  getAuth: getFirebaseAuth,
+  config: billingConfig,
+});
 
 // Node terminates the whole process on an unhandled promise rejection by
 // default — meaning one bad rejection anywhere would take down every other
@@ -29,6 +41,14 @@ process.on("unhandledRejection", (err) => {
 
 const app = express();
 app.use(cors());
+
+// Stripe verifies the signature against the exact bytes it sent. Mount this
+// before express.json(), which would otherwise mutate the request body.
+app.post(
+  "/api/billing/webhook",
+  express.raw({ type: "application/json", limit: "1mb" }),
+  billing.handleWebhook
+);
 app.use(express.json());
 
 // Only rendered clips are shareable by URL. Never expose source videos,
@@ -60,46 +80,15 @@ app.get("/api/health", (req, res) => {
     ok: true,
     commit: (process.env.RAILWAY_GIT_COMMIT_SHA || "unknown").slice(0, 7),
     branch: process.env.RAILWAY_GIT_BRANCH || "unknown",
+    billing: billing.config.state,
     startedAt: STARTED_AT,
     uptimeSec: Math.round(process.uptime()),
   });
 });
 
-// TEMPORARY diagnostic: the audio CDN link works from a residential
-// connection but 404s from this host, and there is no other way to observe
-// what the deployed container actually sees. Remove once resolved.
-app.get("/api/diag/audio", async (req, res) => {
-  const videoId = String(req.query.id || "-p8ZQ4XJlso");
-  const out = { videoId };
-  try {
-    const ipRes = await fetch("https://api.ipify.org?format=json");
-    out.egressIp = (await ipRes.json()).ip;
-  } catch (err) {
-    out.egressIp = `error: ${err.message}`;
-  }
-  try {
-    const host = process.env.AUDIO_RAPIDAPI_HOST || "youtube-mp36.p.rapidapi.com";
-    const meta = await fetch(`https://${host}/dl?id=${encodeURIComponent(videoId)}`, {
-      headers: { "x-rapidapi-key": process.env.RAPIDAPI_KEY, "x-rapidapi-host": host },
-    }).then((r) => r.json());
-    out.providerStatus = meta.status;
-    out.linkHost = meta.link ? new URL(meta.link).host : null;
-
-    if (meta.link) {
-      const ranged = await fetch(meta.link, { headers: { Range: "bytes=0-64" } });
-      ranged.body?.cancel?.();
-      out.rangeGet = ranged.status;
-
-      const plain = await fetch(meta.link);
-      plain.body?.cancel?.();
-      out.plainGet = plain.status;
-      out.contentType = plain.headers.get("content-type");
-    }
-  } catch (err) {
-    out.error = err.message;
-  }
-  res.json(out);
-});
+app.get("/api/billing/status", requireAuth, billing.handleStatus);
+app.post("/api/billing/checkout", requireAuth, billing.handleCheckout);
+app.post("/api/billing/portal", requireAuth, billing.handlePortal);
 
 // Jobs live in memory for fast access, backed by a job.json file per job dir
 // so history survives backend restarts and is available to a user from any
@@ -155,7 +144,7 @@ function updateJob(id, patch) {
 
 loadJobsFromDisk();
 
-app.post("/api/jobs", requireAuth, (req, res) => {
+app.post("/api/jobs", requireAuth, billing.requireActiveSubscription, (req, res) => {
   const { youtubeUrl, numClips, clipLengthSec, subtitleColor, cropMode } = req.body || {};
 
   if (!youtubeUrl || typeof youtubeUrl !== "string") {
@@ -379,5 +368,5 @@ app.use((err, req, res, next) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Podcast Clipper backend listening on http://localhost:${PORT}`);
+  console.log(`VOD Clipper backend listening on http://localhost:${PORT}`);
 });

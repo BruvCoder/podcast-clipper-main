@@ -28,6 +28,11 @@ function ensureInitialized() {
   return auth;
 }
 
+/** Shared Firebase Admin Auth instance for server-side account updates. */
+export function getFirebaseAuth() {
+  return ensureInitialized();
+}
+
 /**
  * Express middleware: requires a valid Firebase ID token in the
  * `Authorization: Bearer <token>` header, and sets req.uid on success.
@@ -53,6 +58,7 @@ export function requireAuth(req, res, next) {
     .then((decoded) => {
       req.uid = decoded.uid;
       req.userEmail = decoded.email;
+      req.auth = decoded;
       next();
     })
     .catch((err) => {

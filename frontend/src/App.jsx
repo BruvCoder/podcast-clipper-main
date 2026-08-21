@@ -6,8 +6,18 @@ import Results from "./components/Results.jsx";
 import Landing from "./components/Landing.jsx";
 import Auth from "./components/Auth.jsx";
 import Sidebar from "./components/Sidebar.jsx";
+import BillingGate from "./components/BillingGate.jsx";
+import { subscriptionIsActive } from "./billing.js";
 import { useAuth } from "./AuthContext.jsx";
-import { createJob, getJob, listJobs, deleteJob } from "./api.js";
+import {
+  createBillingCheckout,
+  createBillingPortal,
+  createJob,
+  deleteJob,
+  getBillingStatus,
+  getJob,
+  listJobs,
+} from "./api.js";
 
 const THEME_KEY = "pc-theme";
 function getInitialTheme() {
@@ -35,7 +45,17 @@ export default function App() {
   const [jobsList, setJobsList] = useState([]);
   const [error, setError] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [billingStatus, setBillingStatus] = useState(undefined);
+  const [billingError, setBillingError] = useState(null);
+  const [billingNotice, setBillingNotice] = useState(null);
+  const [billingAction, setBillingAction] = useState(null);
+  const [checkoutConfirmationPending, setCheckoutConfirmationPending] = useState(false);
   const pollRef = useRef(null);
+
+  const billingReady = billingStatus !== undefined;
+  const billingEnabled = billingStatus?.enabled === true;
+  const billingActive = subscriptionIsActive(billingStatus);
+  const hasAppAccess = billingReady && (!billingEnabled || billingActive);
 
   useEffect(() => {
     return () => clearInterval(pollRef.current);
@@ -58,18 +78,134 @@ export default function App() {
       setActiveJobId(null);
       setJobsList([]);
       setError(null);
+      setBillingStatus(undefined);
+      setBillingError(null);
+      setBillingNotice(null);
+      setBillingAction(null);
+      setCheckoutConfirmationPending(false);
     }
   }, [user]);
 
   useEffect(() => {
-    if (user) refreshJobsList();
+    if (!user) return undefined;
+
+    let cancelled = false;
+    let retryTimer;
+    const params = new URLSearchParams(window.location.search);
+    const checkoutResult = params.get("checkout");
+
+    if (checkoutResult) {
+      params.delete("checkout");
+      const query = params.toString();
+      window.history.replaceState(
+        null,
+        "",
+        `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`,
+      );
+    }
+
+    async function loadBilling() {
+      setBillingStatus(undefined);
+      setBillingError(null);
+      if (checkoutResult === "success") setCheckoutConfirmationPending(true);
+      if (checkoutResult === "cancel" || checkoutResult === "canceled") {
+        setBillingNotice({ type: "info", text: "Checkout was canceled. You were not charged." });
+      }
+
+      const attempts = checkoutResult === "success" ? 6 : 1;
+      let latest;
+      try {
+        for (let attempt = 0; attempt < attempts; attempt += 1) {
+          latest = await getBillingStatus({ forceRefresh: checkoutResult === "success" });
+          if (cancelled || !latest.enabled || subscriptionIsActive(latest)) break;
+          await new Promise((resolve) => {
+            retryTimer = window.setTimeout(resolve, 1200);
+          });
+        }
+
+        if (cancelled) return;
+        setBillingStatus(latest);
+        if (checkoutResult === "success") {
+          setCheckoutConfirmationPending(!subscriptionIsActive(latest));
+          setBillingNotice(
+            subscriptionIsActive(latest)
+              ? { type: "success", text: "Your subscription is active. Welcome to Pro." }
+              : {
+                  type: "info",
+                  text: "Checkout returned successfully. Stripe is still confirming your subscription.",
+                },
+          );
+        }
+      } catch (e) {
+        if (!cancelled) setBillingError(e.message);
+      }
+    }
+
+    loadBilling();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(retryTimer);
+    };
   }, [user]);
+
+  useEffect(() => {
+    if (user && hasAppAccess) refreshJobsList();
+  }, [user, hasAppAccess]);
 
   async function refreshJobsList() {
     try {
       setJobsList(await listJobs());
     } catch {
       // Non-fatal — history just won't show for now.
+    }
+  }
+
+  async function handleRetryBilling() {
+    setBillingStatus(undefined);
+    setBillingError(null);
+    try {
+      const latest = await getBillingStatus({ forceRefresh: true });
+      setBillingStatus(latest);
+      setCheckoutConfirmationPending(!subscriptionIsActive(latest) && latest.status === "none");
+    } catch (e) {
+      setBillingError(e.message);
+    }
+  }
+
+  async function handleCheckout() {
+    setBillingAction("checkout");
+    setBillingError(null);
+    try {
+      window.location.assign(await createBillingCheckout());
+    } catch (e) {
+      if (e.code === "already_subscribed" || e.code === "subscription_needs_attention") {
+        try {
+          setBillingStatus(await getBillingStatus({ forceRefresh: true }));
+          setBillingNotice({
+            type: "info",
+            text:
+              e.code === "already_subscribed"
+                ? "Your subscription is already active."
+                : "Your existing subscription needs attention in Stripe billing.",
+          });
+        } catch (refreshError) {
+          setBillingError(refreshError.message);
+        }
+      } else {
+        setBillingError(e.message);
+      }
+      setBillingAction(null);
+    }
+  }
+
+  async function handleManageBilling() {
+    setBillingAction("portal");
+    setBillingError(null);
+    try {
+      window.location.assign(await createBillingPortal());
+    } catch (e) {
+      setBillingError(e.message);
+      setBillingAction(null);
     }
   }
 
@@ -129,6 +265,21 @@ export default function App() {
       refreshJobsList();
       pollJob(jobId);
     } catch (e) {
+      if (e.code === "subscription_required" || e.status === 402) {
+        clearInterval(pollRef.current);
+        setMainStep("url");
+        try {
+          setBillingStatus(await getBillingStatus({ forceRefresh: true }));
+          setBillingNotice({
+            type: "info",
+            text: "Your subscription changed. Update billing to create another clip.",
+          });
+        } catch (billingRefreshError) {
+          setBillingStatus(undefined);
+          setBillingError(billingRefreshError.message);
+        }
+        return;
+      }
       setError(e.message);
       setMainStep("url");
     }
@@ -187,7 +338,21 @@ export default function App() {
         </div>
       )}
 
-      {!authLoading && user && (
+      {!authLoading && user && (!billingReady || (billingError && !billingStatus) || (billingEnabled && !billingActive)) && (
+        <BillingGate
+          billing={billingStatus}
+          loading={!billingReady && !billingError}
+          error={billingError}
+          notice={billingNotice}
+          action={billingAction}
+          checkoutConfirmationPending={checkoutConfirmationPending}
+          onCheckout={handleCheckout}
+          onManageBilling={handleManageBilling}
+          onRetry={handleRetryBilling}
+        />
+      )}
+
+      {!authLoading && user && hasAppAccess && (
         <div className="app-shell">
           <Sidebar
             jobs={jobsList}
@@ -195,6 +360,9 @@ export default function App() {
             onSelectJob={handleSelectHistoryJob}
             onNewClip={handleNewClip}
             onDeleteJob={handleDeleteJob}
+            billing={billingStatus}
+            billingAction={billingAction}
+            onManageBilling={handleManageBilling}
             open={sidebarOpen}
             onClose={() => setSidebarOpen(false)}
           />
@@ -204,6 +372,11 @@ export default function App() {
               <button className="menu-toggle" onClick={() => setSidebarOpen(true)} aria-label="Open menu">
                 ☰
               </button>
+              {(billingNotice || billingError) && (
+                <div className={`billing-app-notice ${billingError ? "error" : billingNotice?.type || "info"}`}>
+                  {billingError || billingNotice?.text}
+                </div>
+              )}
             </div>
 
             <div className="main-inner">

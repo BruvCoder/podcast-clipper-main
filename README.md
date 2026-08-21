@@ -1,6 +1,6 @@
-# Podcast Clipper
+# VOD Clipper
 
-Podcast Clipper turns a public YouTube podcast into ranked, subtitled vertical clips. Users sign in with Firebase Authentication, choose clip settings, and receive MP4 clips rendered locally by the backend.
+VOD Clipper turns a public YouTube podcast into ranked, subtitled vertical clips. Users sign in with Firebase Authentication, subscribe through Stripe when billing is enabled, choose clip settings, and receive MP4 clips rendered locally by the backend.
 
 > This repository is currently designed for local development. Read [Security and deployment limitations](#security-and-deployment-limitations) before exposing it to the internet.
 
@@ -8,10 +8,11 @@ Podcast Clipper turns a public YouTube podcast into ranked, subtitled vertical c
 
 1. The frontend signs users in with Google or email/password through Firebase Authentication.
 2. Authenticated API requests include a Firebase ID token. The backend verifies the token with Firebase Admin and keeps each user's jobs separate.
-3. The backend uses two RapidAPI providers: it downloads the audio track in full, and validates (but does not download) a video-only stream URL.
-4. Whisper large-v3 (hosted on Groq) transcribes the local audio track, producing word-level timestamps derived from acoustic alignment against the audio.
-5. A text model on Groq receives the timestamped transcript and selects, titles, and ranks the best moments.
-6. For each selected moment, FFmpeg seeks directly into the remote video URL for just that time window, reframes it to 9:16, and burns in timed subtitles — the full source video is never downloaded or stored. The browser polls the job and displays the resulting clips.
+3. When billing is enabled, Stripe-hosted Checkout sells the server-configured subscription and the backend verifies the live subscription before accepting each new job. Stripe's Customer Portal handles payment updates and cancellation.
+4. The backend uses two RapidAPI providers: it downloads the audio track in full, and validates (but does not download) a video-only stream URL. An optional residential HTTP(S) proxy can carry only these media transfers.
+5. Whisper large-v3 (hosted on Groq) transcribes the local audio track, producing word-level timestamps derived from acoustic alignment against the audio.
+6. A text model on Groq receives the timestamped transcript and selects, titles, and ranks the best moments.
+7. For each selected moment, FFmpeg seeks into the remote video URL for only that time window, reframes it to 9:16, and burns in timed subtitles — the full source video is never downloaded or stored. The browser polls the job and displays the resulting clips.
 
 The active downloader does not require `yt-dlp`.
 
@@ -24,6 +25,8 @@ The active downloader does not require `yt-dlp`.
   - YouTube MP3 (`youtube-mp36.p.rapidapi.com`)
 - A **Groq API key** from [Groq Console](https://console.groq.com/keys). One key covers both transcription (Whisper) and clip selection.
 - A **Firebase project** with a Web app, Firebase Authentication, and a Firebase Admin service account.
+- A **Stripe account**, recurring Price, and webhook endpoint when subscription billing is enabled.
+- An HTTP or HTTPS **residential proxy** whose provider permits the intended media traffic when the deployment's direct IP cannot reach the media CDNs.
 
 Confirm the local tools before installing dependencies:
 
@@ -81,7 +84,52 @@ FIREBASE_SERVICE_ACCOUNT_PATH=./firebase-service-account.json
 
 The service-account file is gitignored. Never commit, share, or place its contents in frontend variables. For a deployment platform that stores secrets as environment variables, leave the path unset and set `FIREBASE_SERVICE_ACCOUNT_JSON` to the complete service-account JSON through that platform's secret manager instead.
 
-## 2. Configure and install the backend
+## 2. Configure Stripe subscriptions
+
+Billing is opt-in for local development. With `BILLING_ENABLED` unset or `false`, signed-in users can use the app without a paywall. With it set to `true`, missing or invalid Stripe configuration fails closed and new jobs require a live `active` or `trialing` subscription for the configured Price.
+
+The selected live Stripe account (`acct_1TBHiwAun2WUinl2`) has one active subscription option:
+
+- **VOD Clipper Yearly Access** — **$49 USD per year**
+- Live Price ID: `price_1U6mzHAun2WUinl2owQSnjUX`
+
+Use that Price ID with a live secret key from the same Stripe account. Stripe test-mode objects are separate, so local test-mode Checkout requires a matching test-mode copy of this annual Price rather than mixing the live Price with a test key.
+
+1. In the [Stripe Dashboard](https://dashboard.stripe.com/test/products), create a Product with a recurring Price and copy its `price_...` ID.
+2. Configure the [Stripe Customer Portal](https://dashboard.stripe.com/test/settings/billing/portal) so customers can update payment methods and cancel subscriptions.
+3. Add a webhook endpoint ending in `/api/billing/webhook` and subscribe it to `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`, and `customer.subscription.deleted`.
+4. Put values from the same Stripe mode in `backend/.env`. For the live annual plan, use:
+
+```dotenv
+BILLING_ENABLED=true
+STRIPE_SECRET_KEY=sk_test_your_secret_key
+STRIPE_WEBHOOK_SECRET=whsec_your_endpoint_signing_secret
+STRIPE_PRICE_ID=price_1U6mzHAun2WUinl2owQSnjUX
+APP_URL=http://localhost:5173
+# STRIPE_ALLOW_PROMOTION_CODES=false
+```
+
+For local webhook testing, the Stripe CLI can forward signed events and print the matching `whsec_...` secret:
+
+```bash
+stripe listen --forward-to localhost:8787/api/billing/webhook
+```
+
+Checkout and the Customer Portal are hosted by Stripe and created by the backend, so this integration does not need a Stripe publishable key in the frontend. Never put `STRIPE_SECRET_KEY` or `STRIPE_WEBHOOK_SECRET` in a `VITE_...` variable.
+
+## 3. Configure the residential media proxy
+
+Set the IPRoyal residential HTTP(S) proxy URL in `backend/.env`:
+
+```dotenv
+RESIDENTIAL_PROXY_URL=http://username:password@geo.iproyal.com:12321
+```
+
+Percent-encode reserved characters in the username or password. `MEDIA_PROXY_URL` remains supported as a backwards-compatible alias; do not set both names to different values. Invalid proxy configuration fails closed instead of silently falling back to the server's datacenter IP.
+
+Only the audio download and remote video range requests use this proxy. RapidAPI control requests, Groq, Firebase, Stripe, and other backend traffic stay direct. The URL is never returned to the browser or intentionally logged. Use a provider and plan that permit this traffic, and process only media you are authorized to download and reuse.
+
+## 4. Configure and install the backend
 
 From the repository root:
 
@@ -115,8 +163,11 @@ The remaining values have local defaults:
 | `DOWNLOAD_TOTAL_TIMEOUT_MS` | Maximum total time for the audio download | `1800000` |
 | `PROBE_TIMEOUT_MS` | Maximum time to probe a (local or remote) media source | `45000` |
 | `METADATA_TIMEOUT_MS` | YouTube metadata request timeout | `15000` |
+| `RESIDENTIAL_PROXY_URL` | Optional authenticated HTTP(S) proxy for media transfers only | Direct connection |
+| `BILLING_ENABLED` | Enforce a live Stripe subscription before creating a job | `false` |
+| `APP_URL` | Browser origin/path used for Stripe return URLs | Required with billing |
 
-## 3. Install the frontend
+## 5. Install the frontend
 
 In the frontend directory, install its locked dependencies:
 
@@ -126,7 +177,7 @@ npm ci
 
 If you have not already done so, copy `frontend/.env.example` to `frontend/.env` and fill in the Firebase Web configuration described above.
 
-## 4. Run locally
+## 6. Run locally
 
 Start the backend in the first terminal:
 
@@ -150,14 +201,14 @@ Sign in with Google or create an email/password account, paste a supported publi
 
 ## Tests and build checks
 
-Run the downloader transport, validation, ranking, and fallback tests:
+Run the Stripe billing, proxy transport, downloader validation, ranking, and fallback tests:
 
 ```bash
 cd backend
 npm test
 ```
 
-Run the frontend YouTube URL validation tests:
+Run the frontend URL, billing-state, and price-formatting tests:
 
 ```bash
 cd frontend
@@ -174,6 +225,9 @@ npm run build
 ## Security and deployment limitations
 
 - Never commit `.env` files, Firebase Admin service-account JSON, private keys, or provider credentials. The included templates contain placeholders only. Rotate any credential that is exposed.
+- Stripe webhook signatures are verified against the raw request body. The live subscription is queried and matched against the server-selected Price before every new job; browser state and Firebase claims alone never grant paid access.
+- Stripe billing mappings are cached in Firebase custom claims. Firebase replaces the complete custom-claims map on each write, so production deployments that also mutate roles or other claims need one coordinated claims writer (or should move canonical billing state to a database) to avoid concurrent read/merge/write races.
+- Residential proxy credentials stay in the backend. The proxy provider can observe connection destinations and traffic volume, so use a provider you trust and keep its credentials in your host's secret manager.
 - The authenticated `/api/jobs` routes verify Firebase ID tokens and restrict job metadata by Firebase user ID. Rendered `/files/<job>/clips/<clip>.mp4` URLs are intentionally shareable without authentication, but backend working files are not served. Anyone who obtains a clip URL can still fetch that rendered clip.
 - CORS is currently open and there is no rate limiting, quota enforcement, or production hardening. Do not expose this backend directly to the public internet as-is.
 - Job metadata is cached in memory and persisted to a `job.json` file per job directory, so history survives a restart. Multiple backend instances still do not share state, and history is only as durable as the volume holding `backend/jobs/`.
@@ -196,11 +250,13 @@ backend/
   src/
     server.js              # authenticated API and job orchestration
     lib/
-      firebaseAdmin.js     # Firebase ID-token verification
+      firebaseAdmin.js     # Firebase ID-token verification and billing claim storage
+      stripeBilling.js     # Checkout, Customer Portal, webhooks, and subscription gate
+      mediaProxy.js        # credential-safe, media-only residential proxy transport
       rapidapi.js          # audio download and remote video-source selection
       ffmpeg.js            # per-clip remote-seek rendering, reframing, and subtitle burn-in
       groqTranscribe.js    # word-level-timestamped transcription via Whisper on Groq
-      gemini.js            # clip selection and ranking
+      clipPicker.js        # clip selection and ranking through Groq
   jobs/                    # local per-job media and output (gitignored)
 frontend/
   src/
