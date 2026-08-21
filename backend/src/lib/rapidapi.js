@@ -7,7 +7,7 @@ import { spawn } from "child_process";
 import { Transform } from "stream";
 import { pipeline } from "stream/promises";
 import { relayUrl, releaseRelay } from "./videoRelay.js";
-import { mediaAgent, mediaFetch } from "./mediaProxy.js";
+import { createMediaRequestScope, mediaFetch } from "./mediaProxy.js";
 
 // Two providers, combined: one supplies a video stream and the other supplies
 // audio. The video endpoint returns every available format; we rank
@@ -31,6 +31,10 @@ const DOWNLOAD_TOTAL_TIMEOUT_MS = positiveInteger(
 );
 const PROBE_TIMEOUT_MS = positiveInteger(process.env.PROBE_TIMEOUT_MS, 45_000);
 const METADATA_TIMEOUT_MS = positiveInteger(process.env.METADATA_TIMEOUT_MS, 15_000);
+const AUDIO_LINK_PROBE_TIMEOUT_MS = positiveInteger(
+  process.env.AUDIO_LINK_PROBE_TIMEOUT_MS,
+  Math.min(DOWNLOAD_INACTIVITY_TIMEOUT_MS, 15_000)
+);
 const MAX_API_RESPONSE_BYTES = 2 * 1024 * 1024;
 const MAX_REDIRECTS = 5;
 const TARGET_SHORT_EDGE = 720;
@@ -45,6 +49,13 @@ const AUDIO_DOWNLOAD_ATTEMPTS = positiveInteger(process.env.AUDIO_DOWNLOAD_ATTEM
 function positiveInteger(value, fallback) {
   const parsed = Number.parseInt(value, 10);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function timeoutLimitLabel(milliseconds) {
+  if (milliseconds >= 60_000 && milliseconds % 60_000 === 0) {
+    return `${milliseconds / 60_000}-minute`;
+  }
+  return `${Math.max(1, Math.round(milliseconds / 1_000))}-second`;
 }
 
 function requireApiKey() {
@@ -91,6 +102,27 @@ function abortError(signal, fallbackMessage = "Operation was cancelled") {
   const err = new Error(typeof reason === "string" ? reason : fallbackMessage);
   err.name = "AbortError";
   return err;
+}
+
+function withAbortSignal(promise, signal) {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(abortError(signal));
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      callback(value);
+    };
+    const onAbort = () => finish(reject, abortError(signal));
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => finish(resolve, value),
+      (error) => finish(reject, error)
+    );
+  });
 }
 
 const FATAL_FORMAT_ERROR_CODES = new Set([
@@ -246,6 +278,7 @@ function sanitizeRequestHeaders(headers) {
     "connection",
     "content-length",
     "host",
+    "proxy-authorization",
     "range",
     "transfer-encoding",
   ]);
@@ -278,7 +311,29 @@ function headersForRedirect(headers, previousUrl, nextUrl) {
   );
 }
 
-function requestDownloadResponse(url, { headers, signal }) {
+function requestDownloadResponse(url, { headers, requestScope, signal }) {
+  if (requestScope) {
+    return withAbortSignal(
+      requestScope
+        .request(url, {
+          method: "GET",
+          headers,
+          signal,
+          maxRedirections: 0,
+          headersTimeout: DOWNLOAD_INACTIVITY_TIMEOUT_MS,
+          bodyTimeout: DOWNLOAD_INACTIVITY_TIMEOUT_MS,
+        })
+        .then(({ body, headers: responseHeaders, statusCode }) => {
+          // Match the small IncomingMessage surface used by the downloader while
+          // retaining Undici's proxy routing and body/header timeouts.
+          body.headers = responseHeaders;
+          body.statusCode = statusCode;
+          return body;
+        }),
+      signal
+    );
+  }
+
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(abortError(signal));
 
@@ -295,8 +350,7 @@ function requestDownloadResponse(url, { headers, signal }) {
     };
     const onAbort = () => req?.destroy(abortError(signal));
 
-    const agent = mediaAgent();
-    req = client.get(url, agent ? { headers, agent } : { headers }, (res) => finish(null, res));
+    req = client.get(url, { headers }, (res) => finish(null, res));
     signal?.addEventListener("abort", onAbort, { once: true });
     req.setTimeout(DOWNLOAD_INACTIVITY_TIMEOUT_MS, () => {
       req.destroy(
@@ -324,12 +378,16 @@ async function responseSnippet(res, limit = 64 * 1024) {
   return Buffer.concat(chunks).toString("utf8").trim().slice(0, 300);
 }
 
-async function openDownloadResponse(initialUrl, { headers, signal, maxRedirects }) {
+async function openDownloadResponse(initialUrl, { headers, requestScope, signal, maxRedirects }) {
   let currentUrl = validateDownloadUrl(initialUrl);
   let currentHeaders = sanitizeRequestHeaders(headers);
 
   for (let redirectCount = 0; ; redirectCount++) {
-    const res = await requestDownloadResponse(currentUrl, { headers: currentHeaders, signal });
+    const res = await requestDownloadResponse(currentUrl, {
+      headers: currentHeaders,
+      requestScope,
+      signal,
+    });
     const isRedirect = res.statusCode >= 300 && res.statusCode < 400;
 
     if (isRedirect) {
@@ -358,9 +416,11 @@ async function openDownloadResponse(initialUrl, { headers, signal, maxRedirects 
       );
     }
 
-    res.setTimeout(DOWNLOAD_INACTIVITY_TIMEOUT_MS, () => {
-      res.destroy(new Error(`Download stream was idle for ${DOWNLOAD_INACTIVITY_TIMEOUT_MS}ms`));
-    });
+    if (typeof res.setTimeout === "function") {
+      res.setTimeout(DOWNLOAD_INACTIVITY_TIMEOUT_MS, () => {
+        res.destroy(new Error(`Download stream was idle for ${DOWNLOAD_INACTIVITY_TIMEOUT_MS}ms`));
+      });
+    }
     return { res, finalUrl: currentUrl };
   }
 }
@@ -405,17 +465,35 @@ async function downloadToFile(
 ) {
   const partPath = `${destPath}.${randomUUID()}.part`;
   let activeResponse;
+  const requestScope = createMediaRequestScope();
+  let requestScopeDestroyed = false;
+  const destroyRequestScope = (error) => {
+    if (!requestScope || requestScopeDestroyed) return;
+    requestScopeDestroyed = true;
+    requestScope.destroy(error).catch(() => {});
+  };
+  const operationController = new AbortController();
+  const onCallerAbort = () => {
+    const error = abortError(signal);
+    operationController.abort(error);
+    destroyRequestScope(error);
+  };
+  if (signal?.aborted) onCallerAbort();
+  else signal?.addEventListener("abort", onCallerAbort, { once: true });
   const totalTimer = setTimeout(() => {
-    activeResponse?.destroy(
-      new Error(`Download exceeded the ${Math.round(DOWNLOAD_TOTAL_TIMEOUT_MS / 60_000)}-minute limit`)
+    const timeoutError = new Error(
+      `Download exceeded the ${timeoutLimitLabel(DOWNLOAD_TOTAL_TIMEOUT_MS)} limit`
     );
+    operationController.abort(timeoutError);
+    destroyRequestScope(timeoutError);
   }, DOWNLOAD_TOTAL_TIMEOUT_MS);
   totalTimer.unref?.();
 
   try {
     const opened = await openDownloadResponse(url, {
       headers,
-      signal,
+      requestScope,
+      signal: operationController.signal,
       maxRedirects: redirectsLeft,
     });
     activeResponse = opened.res;
@@ -442,8 +520,7 @@ async function downloadToFile(
       },
     });
     const file = fs.createWriteStream(partPath, { flags: "wx" });
-    if (signal) await pipeline(activeResponse, counter, file, { signal });
-    else await pipeline(activeResponse, counter, file);
+    await pipeline(activeResponse, counter, file, { signal: operationController.signal });
 
     if (total != null && received !== total) {
       throw new Error(`Download ended at ${received} bytes; expected ${total} bytes`);
@@ -458,7 +535,9 @@ async function downloadToFile(
     throw new Error(`${label} failed: ${err.message}`, { cause: err });
   } finally {
     clearTimeout(totalTimer);
+    signal?.removeEventListener("abort", onCallerAbort);
     activeResponse?.destroy();
+    if (!requestScopeDestroyed) await requestScope?.close().catch(() => {});
     await fs.promises.rm(partPath, { force: true }).catch(() => {});
   }
 }
@@ -773,12 +852,34 @@ async function fetchAudioTrack(videoId, { attempts = 6, intervalMs = 2_000, sign
 
 /** True if a URL actually serves bytes right now (not just advertised). */
 async function linkIsFetchable(url) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort(
+      new Error(`Audio readiness probe exceeded ${AUDIO_LINK_PROBE_TIMEOUT_MS}ms`)
+    );
+  }, AUDIO_LINK_PROBE_TIMEOUT_MS);
+  timer.unref?.();
+
   try {
-    const res = await mediaFetch(url, { headers: { Range: "bytes=0-64" }, redirect: "follow" });
-    res.body?.cancel?.();
+    const res = await withAbortSignal(
+      mediaFetch(url, {
+        headers: { Range: "bytes=0-64" },
+        redirect: "follow",
+        signal: controller.signal,
+      }),
+      controller.signal
+    );
+    try {
+      await res.body?.cancel?.();
+    } catch {
+      // The status already tells us whether the link is ready; cancellation
+      // errors are transport cleanup and should not flip a successful probe.
+    }
     return res.status === 206 || res.status === 200;
   } catch {
     return false;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -996,6 +1097,7 @@ export const __testing = {
   downloadToFile,
   durationToleranceSec,
   extractVideoId,
+  linkIsFetchable,
   headersForRedirect,
   isFatalFormatAttemptError,
   normalizeVideoFormats,

@@ -3,7 +3,7 @@ import Waveform from "./Waveform.jsx";
 const FEATURES = [
   {
     title: "AI-picked moments",
-    text: "Gemini reads the full transcript and finds the handful of moments that actually hook — not just anything that sounds relevant.",
+    text: "AI reads the full transcript and finds the handful of moments that actually hook — not just anything that sounds relevant.",
   },
   {
     title: "Ranked by virality score",
@@ -38,7 +38,7 @@ const STEPS = [
   },
   {
     title: "AI finds the moments",
-    text: "Gemini reads the transcript and picks the strongest, self-contained hooks.",
+    text: "AI reads the transcript and picks the strongest, self-contained hooks.",
   },
   {
     title: "Download & post",

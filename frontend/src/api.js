@@ -12,9 +12,27 @@ export function resolveMediaUrl(url) {
   return url && !/^https?:\/\//.test(url) ? `${API_BASE_URL}${url}` : url;
 }
 
-async function authHeaders() {
-  const token = auth.currentUser ? await auth.currentUser.getIdToken() : null;
+async function authHeaders(forceRefresh = false) {
+  const token = auth.currentUser ? await auth.currentUser.getIdToken(forceRefresh) : null;
   return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+async function readJsonResponse(res, fallbackMessage) {
+  let data = {};
+  try {
+    data = await res.json();
+  } catch {
+    // Keep the fallback below useful when a proxy/server returns HTML or an
+    // empty response instead of JSON.
+  }
+  if (!res.ok) {
+    const error = new Error(data.error || fallbackMessage);
+    error.status = res.status;
+    error.code = data.code || null;
+    error.details = data;
+    throw error;
+  }
+  return data;
 }
 
 export async function createJob({ youtubeUrl, numClips, clipLengthSec, subtitleColor, cropMode }) {
@@ -23,16 +41,13 @@ export async function createJob({ youtubeUrl, numClips, clipLengthSec, subtitleC
     headers: { "Content-Type": "application/json", ...(await authHeaders()) },
     body: JSON.stringify({ youtubeUrl, numClips, clipLengthSec, subtitleColor, cropMode }),
   });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || "Failed to create job");
+  const data = await readJsonResponse(res, "Failed to create job");
   return data.jobId;
 }
 
 export async function getJob(jobId) {
   const res = await fetch(`${API_BASE_URL}/api/jobs/${jobId}`, { headers: await authHeaders() });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || "Failed to fetch job");
-  return data;
+  return readJsonResponse(res, "Failed to fetch job");
 }
 
 export async function deleteJob(jobId) {
@@ -40,14 +55,40 @@ export async function deleteJob(jobId) {
     method: "DELETE",
     headers: await authHeaders(),
   });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || "Failed to delete this clip");
-  return data;
+  return readJsonResponse(res, "Failed to delete this clip");
 }
 
 export async function listJobs() {
   const res = await fetch(`${API_BASE_URL}/api/jobs`, { headers: await authHeaders() });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || "Failed to fetch job history");
+  const data = await readJsonResponse(res, "Failed to fetch job history");
   return data.jobs;
+}
+
+export async function getBillingStatus({ forceRefresh = false } = {}) {
+  const res = await fetch(`${API_BASE_URL}/api/billing/status`, {
+    headers: await authHeaders(forceRefresh),
+  });
+  return readJsonResponse(res, "Failed to check your subscription");
+}
+
+export async function createBillingCheckout() {
+  const res = await fetch(`${API_BASE_URL}/api/billing/checkout`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+    body: JSON.stringify({}),
+  });
+  const data = await readJsonResponse(res, "Failed to start checkout");
+  if (!data.url) throw new Error("Checkout did not return a redirect URL");
+  return data.url;
+}
+
+export async function createBillingPortal() {
+  const res = await fetch(`${API_BASE_URL}/api/billing/portal`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+    body: JSON.stringify({}),
+  });
+  const data = await readJsonResponse(res, "Failed to open billing settings");
+  if (!data.url) throw new Error("Billing settings did not return a redirect URL");
+  return data.url;
 }

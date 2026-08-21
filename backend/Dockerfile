@@ -1,7 +1,7 @@
 FROM node:22-slim
 
 # ffmpeg/ffprobe for remote-seek clip rendering and subtitle burn-in.
-# Transcription now runs on Gemini (see src/lib/geminiTranscribe.js), so no
+# Transcription runs through Groq (see src/lib/groqTranscribe.js), so no
 # Python/faster-whisper toolchain is needed here anymore.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
