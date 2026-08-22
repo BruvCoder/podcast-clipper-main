@@ -549,6 +549,66 @@ input[type="range"]::-moz-range-thumb {
   font-size: 13px;
 }
 
+.progress-block {
+  width: 100%;
+  max-width: 380px;
+  margin: 18px auto 0;
+}
+
+.progress-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 9px;
+}
+
+.progress-percent {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+
+.progress-track {
+  position: relative;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  width: 0;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-hover));
+  transition: width 0.45s ease;
+}
+
+/* Used when a stage carries no measurable progress: a travelling sliver, so
+   the bar still reads as "busy" rather than "stuck at zero". */
+.progress-track.indeterminate .progress-fill {
+  width: 35%;
+  animation: progress-slide 1.25s ease-in-out infinite;
+}
+
+@keyframes progress-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(285%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .progress-track.indeterminate .progress-fill {
+    animation: none;
+    width: 100%;
+    opacity: 0.5;
+  }
+  .progress-fill { transition: none; }
+}
+
 /* --- Results grid --- */
 
 .top-bar {
@@ -558,13 +618,11 @@ input[type="range"]::-moz-range-thumb {
   margin-bottom: 6px;
 }
 
-/* Cards are 9:16, so their width drives their height at a 16/9 multiplier — a
-   220px column was ~390px tall before its caption, and four of those buried the
-   page. Narrower columns fit a full set on screen at once, which is the point
-   of a results grid. */
+/* With square thumbnails a column's width is also its thumbnail's height, so
+   cards stay compact without the columns having to be narrow. */
 .results-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: 12px;
   margin-top: 20px;
 }
@@ -583,9 +641,13 @@ input[type="range"]::-moz-range-thumb {
   transform: translateY(-2px);
 }
 
+/* The clips themselves are 9:16, but a grid of full-height 9:16 thumbnails
+   reads as a row of skinny slivers. A square thumbnail centre-crops the frame
+   — where the speaker is anyway — and keeps the grid compact. */
 .clip-card video {
   width: 100%;
-  aspect-ratio: 9 / 16;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
   background: black;
   display: block;
   pointer-events: none;
