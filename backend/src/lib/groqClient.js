@@ -25,14 +25,19 @@ const RETRYABLE_STATUS = new Set([408, 409, 429, 500, 502, 503, 504]);
 export async function groqPostWithRetry(
   endpoint,
   buildBody,
-  { attempts = 4, timeoutMs = 120_000, extraHeaders = {}, label = "Groq request" } = {}
+  { attempts = 4, timeoutMs = 120_000, extraHeaders = {}, label = "Groq request", signal } = {}
 ) {
   const apiKey = requireGroqKey();
   let lastErr;
 
   for (let attempt = 1; attempt <= attempts; attempt++) {
+    signal?.throwIfAborted();
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const requestSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+    const timer = setTimeout(
+      () => controller.abort(new DOMException(`${label} timed out.`, "TimeoutError")),
+      timeoutMs
+    );
     timer.unref?.();
 
     try {
@@ -40,7 +45,7 @@ export async function groqPostWithRetry(
         method: "POST",
         headers: { Authorization: `Bearer ${apiKey}`, ...extraHeaders },
         body: await buildBody(),
-        signal: controller.signal,
+        signal: requestSignal,
       });
 
       if (!res.ok) {
@@ -51,17 +56,38 @@ export async function groqPostWithRetry(
       }
       return await res.json();
     } catch (err) {
+      // User/job cancellation is terminal. In particular, never turn DELETE
+      // into multiple retry attempts or an uninterruptible backoff sleep.
+      if (signal?.aborted) throw signal.reason;
       lastErr = err;
-      const retryable = err.name === "AbortError" || RETRYABLE_STATUS.has(err.status);
+      const retryable = controller.signal.aborted || RETRYABLE_STATUS.has(err.status);
       if (attempt === attempts || !retryable) throw err;
       const delay = 1000 * 2 ** (attempt - 1) + Math.random() * 250;
       console.warn(
         `${label} failed (attempt ${attempt}/${attempts}), retrying in ${Math.round(delay)}ms: ${err.message}`
       );
-      await new Promise((resolve) => setTimeout(resolve, delay));
+      await abortableDelay(delay, signal);
     } finally {
       clearTimeout(timer);
     }
   }
   throw lastErr;
+}
+
+function abortableDelay(delayMs, signal) {
+  signal?.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(finish, delayMs);
+    timer.unref?.();
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      reject(signal.reason);
+    };
+    function finish() {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
 }

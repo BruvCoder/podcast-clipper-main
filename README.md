@@ -9,29 +9,26 @@ VOD Clipper turns a public YouTube podcast into ranked, subtitled vertical clips
 1. The frontend signs users in with Google or email/password through Firebase Authentication.
 2. Authenticated API requests include a Firebase ID token. The backend verifies the token with Firebase Admin and keeps each user's jobs separate.
 3. When billing is enabled, Stripe-hosted Checkout sells the server-configured subscription and the backend verifies the live subscription before accepting each new job. Stripe's Customer Portal handles payment updates and cancellation.
-4. The backend uses two RapidAPI providers: it downloads the audio track in full, and validates (but does not download) a video-only stream URL. An optional residential HTTP(S) proxy can carry only these media transfers.
-5. Whisper large-v3 (hosted on Groq) transcribes the local audio track, producing word-level timestamps derived from acoustic alignment against the audio.
+4. The backend runs `yt-dlp` directly to validate the YouTube URL and download a merged, resolution-bounded source into an ephemeral per-job directory. An optional residential HTTP(S) proxy carries all yt-dlp YouTube traffic.
+5. Whisper large-v3 (hosted on Groq) transcribes the audio stream from that local source, producing word-level timestamps derived from acoustic alignment against the audio.
 6. A text model on Groq receives the timestamped transcript and selects, titles, and ranks the best moments.
-7. For each selected moment, FFmpeg seeks into the remote video URL for only that time window, reframes it to 9:16, and burns in timed subtitles — the full source video is never downloaded or stored. The browser polls the job and displays the resulting clips.
-
-The active downloader does not require `yt-dlp`.
+7. For each selected moment, FFmpeg seeks into the local source, reframes it to 9:16, and burns in timed subtitles. The temporary source is removed after rendering; the browser polls the job and displays the resulting clips.
 
 ## Requirements
 
 - **Node.js 22.12 or newer** and npm. Vite 8 requires a current Node release.
 - **FFmpeg and ffprobe** available on `PATH`.
-- A **RapidAPI key** subscribed to both providers used by the backend:
-  - Cloud API Hub - YouTube Downloader (`cloud-api-hub-youtube-downloader.p.rapidapi.com`)
-  - YouTube MP3 (`youtube-mp36.p.rapidapi.com`)
+- **yt-dlp** available on `PATH`. Production uses the checksum-pinned official binary in `backend/Dockerfile`.
 - A **Groq API key** from [Groq Console](https://console.groq.com/keys). One key covers both transcription (Whisper) and clip selection.
 - A **Firebase project** with a Web app, Firebase Authentication, and a Firebase Admin service account.
 - A **Stripe account**, recurring Price, and webhook endpoint when subscription billing is enabled.
-- An HTTP or HTTPS **residential proxy** whose provider permits the intended media traffic when the deployment's direct IP cannot reach the media CDNs.
+- An HTTP or HTTPS **residential proxy** whose provider permits the intended media traffic. It is optional locally and required by the production readiness check by default.
 
 Confirm the local tools before installing dependencies:
 
 ```bash
 node --version
+yt-dlp --version
 ffmpeg -version
 ffprobe -version
 ```
@@ -95,17 +92,17 @@ The selected live Stripe account (`acct_1TBHiwAun2WUinl2`) has one active subscr
 
 Use that Price ID with a live secret key from the same Stripe account. Stripe test-mode objects are separate, so local test-mode Checkout requires a matching test-mode copy of this annual Price rather than mixing the live Price with a test key.
 
-1. In the [Stripe Dashboard](https://dashboard.stripe.com/test/products), create a Product with a recurring Price and copy its `price_...` ID.
-2. Configure the [Stripe Customer Portal](https://dashboard.stripe.com/test/settings/billing/portal) so customers can update payment methods and cancel subscriptions.
+1. In the live [Stripe Dashboard](https://dashboard.stripe.com/products), confirm the recurring Product and copy its `price_...` ID.
+2. Configure the live [Stripe Customer Portal](https://dashboard.stripe.com/settings/billing/portal) so customers can update payment methods and cancel subscriptions.
 3. Add a webhook endpoint ending in `/api/billing/webhook` and subscribe it to `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`, and `customer.subscription.deleted`.
 4. Put values from the same Stripe mode in `backend/.env`. For the live annual plan, use:
 
 ```dotenv
 BILLING_ENABLED=true
-STRIPE_SECRET_KEY=sk_test_your_secret_key
+STRIPE_SECRET_KEY=sk_live_your_secret_key
 STRIPE_WEBHOOK_SECRET=whsec_your_endpoint_signing_secret
 STRIPE_PRICE_ID=price_1U6mzHAun2WUinl2owQSnjUX
-APP_URL=http://localhost:5173
+APP_URL=https://vod-clipper.com
 # STRIPE_ALLOW_PROMOTION_CODES=false
 ```
 
@@ -127,7 +124,9 @@ RESIDENTIAL_PROXY_URL=http://username:password@geo.iproyal.com:12321
 
 Percent-encode reserved characters in the username or password. `MEDIA_PROXY_URL` remains supported as a backwards-compatible alias; do not set both names to different values. Invalid proxy configuration fails closed instead of silently falling back to the server's datacenter IP.
 
-Only the audio download and remote video range requests use this proxy. RapidAPI control requests, Groq, Firebase, Stripe, and other backend traffic stay direct. The URL is never returned to the browser or intentionally logged. Use a provider and plan that permit this traffic, and process only media you are authorized to download and reuse.
+yt-dlp uses this proxy for YouTube extraction and the complete bounded source download. Groq, Firebase, Stripe, and other backend traffic stays direct. Proxy credentials are supplied to yt-dlp through a private stdin configuration rather than command-line arguments, and are redacted from job progress and errors. Use a provider and plan that permits this traffic, and process only media you are authorized to download and reuse.
+
+For IPRoyal endpoints, the backend derives a fresh eight-character sticky session for each attempt while leaving the base credential stored in the environment unchanged. IPRoyal's high-end streaming pool is plan-specific, so it is opt-in with `YTDLP_IPROYAL_STREAMING=true`. The production Railway service uses that setting because an authenticated media-download canary against its configured IPRoyal account passed with the streaming pool enabled. Set `YTDLP_ROTATE_IPROYAL_SESSION=false` only when a fixed session is intentional.
 
 ## 4. Configure and install the backend
 
@@ -142,9 +141,10 @@ cp .env.example .env
 Edit `backend/.env` and set:
 
 ```dotenv
-RAPIDAPI_KEY=your_rapidapi_key_here
 GROQ_API_KEY=your_groq_api_key_here
 FIREBASE_SERVICE_ACCOUNT_PATH=./firebase-service-account.json
+# Optional on datacenter hosts:
+# RESIDENTIAL_PROXY_URL=http://username:password@geo.iproyal.com:12321
 ```
 
 The remaining values have local defaults:
@@ -156,14 +156,23 @@ The remaining values have local defaults:
 | `PORT` | Backend HTTP port | `8787` |
 | `TRANSCRIBE_CHUNK_SEC` | Seconds of audio per transcription request; sized for the API's file-size limit, not timing accuracy | `600` |
 | `TRANSCRIBE_CONCURRENCY` | How many chunks to transcribe at once | `3` |
-| `VIDEO_RAPIDAPI_HOST` | Override the video provider host | Built-in provider host |
-| `AUDIO_RAPIDAPI_HOST` | Override the audio provider host | Built-in provider host |
-| `RAPIDAPI_TIMEOUT_MS` | Provider API request timeout | `30000` |
-| `DOWNLOAD_INACTIVITY_TIMEOUT_MS` | Maximum idle time while receiving media | `45000` |
-| `DOWNLOAD_TOTAL_TIMEOUT_MS` | Maximum total time for the audio download | `1800000` |
-| `PROBE_TIMEOUT_MS` | Maximum time to probe a (local or remote) media source | `45000` |
-| `METADATA_TIMEOUT_MS` | YouTube metadata request timeout | `15000` |
-| `RESIDENTIAL_PROXY_URL` | Optional authenticated HTTP(S) proxy for media transfers only | Direct connection |
+| `YTDLP_METADATA_TIMEOUT_MS` | Maximum time for yt-dlp metadata extraction | `120000` |
+| `YTDLP_DOWNLOAD_TIMEOUT_MS` | Overall metadata, proxy-retry, and source-download deadline | `1800000` |
+| `YTDLP_SOCKET_TIMEOUT_SEC` | Per-socket network timeout | `30` |
+| `YTDLP_MAX_DURATION_SEC` | Maximum accepted source duration | `14400` |
+| `YTDLP_MAX_SOURCE_BYTES` | Live aggregate cap for yt-dlp fragments, inputs, and merged source | `2147483648` |
+| `YTDLP_MAX_HEIGHT` | Preferred maximum source height | `720` |
+| `YTDLP_CONCURRENT_FRAGMENTS` | Concurrent DASH/HLS fragment downloads | `4` |
+| `YTDLP_SESSION_ATTEMPTS` | Fresh IPRoyal sessions tried after YouTube blocks an IP | `3` |
+| `YTDLP_RETRY_BACKOFF_MS` | Initial backoff between fresh-session attempts | `250` |
+| `YTDLP_ROTATE_IPROYAL_SESSION` | Add or replace an IPRoyal sticky-session ID per attempt | `true` |
+| `YTDLP_IPROYAL_STREAMING` | Opt into IPRoyal's plan-specific high-end streaming pool | `false` |
+| `YTDLP_REQUIRE_PROXY` | Fail production readiness when no residential proxy is configured | `true` in production |
+| `JOB_PROCESS_CONCURRENCY` | Maximum whole jobs downloading/transcribing/rendering at once | `1` |
+| `MAX_OUTSTANDING_JOBS` | Maximum queued and running jobs across the service | `10` |
+| `MAX_OUTSTANDING_JOBS_PER_USER` | Maximum queued and running jobs for one user | `2` |
+| `YTDLP_COOKIES_FILE` | Optional server-side Netscape cookies file | Unset |
+| `RESIDENTIAL_PROXY_URL` | Authenticated HTTP(S) proxy for yt-dlp's YouTube traffic | Direct locally; required in production |
 | `BILLING_ENABLED` | Enforce a live Stripe subscription before creating a job | `false` |
 | `APP_URL` | Browser origin/path used for Stripe return URLs | Required with billing |
 
@@ -201,7 +210,7 @@ Sign in with Google or create an email/password account, paste a supported publi
 
 ## Tests and build checks
 
-Run the Stripe billing, proxy transport, downloader validation, ranking, and fallback tests:
+Run the backend billing, yt-dlp validation/redaction/process, and local-render tests:
 
 ```bash
 cd backend
@@ -231,17 +240,17 @@ npm run build
 - The authenticated `/api/jobs` routes verify Firebase ID tokens and restrict job metadata by Firebase user ID. Rendered `/files/<job>/clips/<clip>.mp4` URLs are intentionally shareable without authentication, but backend working files are not served. Anyone who obtains a clip URL can still fetch that rendered clip.
 - CORS is currently open and there is no rate limiting, quota enforcement, or production hardening. Do not expose this backend directly to the public internet as-is.
 - Job metadata is cached in memory and persisted to a `job.json` file per job directory, so history survives a restart. Multiple backend instances still do not share state, and history is only as durable as the volume holding `backend/jobs/`.
-- Source media, extracted audio, and rendered clips are written under `backend/jobs/`. Files remain on that machine until removed, have no automatic retention policy, and are unsuitable for ephemeral or multi-instance hosting.
+- Downloaded source media is written to an ephemeral OS temp directory while a job runs and removed after rendering, failure, or cancellation. Startup recovery sweeps stale temp workspaces, non-public partial renders, and legacy `source.*` files from `backend/jobs/`. Rendered clips and job metadata remain until the user deletes the job; there is no automatic retention policy.
 - Firebase Authentication does not make file storage private. A production version should move job state to a database, store media in private object storage, authorize every download, and add cleanup/retention jobs.
-- RapidAPI receives the YouTube video ID and its providers supply the media streams. Groq receives the audio for transcription and the resulting timestamped transcript for clip selection. FFmpeg processing runs locally on the backend.
+- yt-dlp connects to YouTube directly (through the configured residential proxy, when present). Groq receives compressed audio chunks for transcription and the resulting timestamped transcript for clip selection. FFmpeg processing runs locally on the backend.
 - Only process media you are authorized to download and reuse. You are responsible for complying with YouTube's terms, copyright law, and the terms and quotas of all configured API providers.
 
 ## Current product limitations
 
 - The vertical reframe uses a center crop or padded layout; it does not track faces or active speakers.
 - The virality score is the clip-selection model's relative judgment across the returned clips, not a trained prediction or guarantee of performance.
-- Processing is CPU-, memory-, disk-, and network-intensive. Long videos substantially increase runtime, and transcription cost/time scales with episode length since it's billed per API call.
-- The pipeline targets public YouTube video URL formats supported by its URL parser and external providers; private, restricted, unavailable, or provider-blocked videos will fail.
+- Processing is CPU-, memory-, disk-, and network-intensive. Whole jobs are serialized by default, and the API caps queued/running work globally and per user, to keep proxy traffic and resource usage bounded. Long videos substantially increase runtime, and transcription cost/time scales with episode length since it's billed per API call.
+- The pipeline accepts individual public YouTube video URLs. Private, restricted, live, unavailable, oversized, or YouTube-blocked videos will fail.
 
 ## Project structure
 
@@ -252,9 +261,8 @@ backend/
     lib/
       firebaseAdmin.js     # Firebase ID-token verification and billing claim storage
       stripeBilling.js     # Checkout, Customer Portal, webhooks, and subscription gate
-      mediaProxy.js        # credential-safe, media-only residential proxy transport
-      rapidapi.js          # audio download and remote video-source selection
-      ffmpeg.js            # per-clip remote-seek rendering, reframing, and subtitle burn-in
+      ytdlp.js             # URL validation, IPRoyal config, metadata, and source download
+      ffmpeg.js            # local-source clip rendering, reframing, and subtitle burn-in
       groqTranscribe.js    # word-level-timestamped transcription via Whisper on Groq
       clipPicker.js        # clip selection and ranking through Groq
   jobs/                    # local per-job media and output (gitignored)

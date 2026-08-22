@@ -116,7 +116,7 @@ Respond only with JSON matching the provided schema.`;
  * picks the best `numClips` non-overlapping moments (each close to
  * `clipLengthSec` seconds) and scores them for predicted view potential.
  */
-export async function pickClips(transcriptText, { numClips, clipLengthSec, videoDurationSec }) {
+export async function pickClips(transcriptText, { numClips, clipLengthSec, videoDurationSec, signal }) {
   const prompt = `Video duration: ~${Math.round(videoDurationSec)} seconds.
 
 Pick exactly ${numClips} distinct, non-overlapping clips, each close to ${clipLengthSec} seconds long \
@@ -143,6 +143,7 @@ Respond only with JSON matching the schema.`;
       timeoutMs: TIMEOUT_MS,
       extraHeaders: { "Content-Type": "application/json" },
       label: "Clip selection",
+      signal,
     }
   );
 

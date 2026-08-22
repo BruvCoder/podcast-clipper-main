@@ -21,16 +21,83 @@ const CHUNK_SEC = positiveInteger(process.env.TRANSCRIBE_CHUNK_SEC, 600);
 const TRANSCRIBE_CONCURRENCY = positiveInteger(process.env.TRANSCRIBE_CONCURRENCY, 3);
 const TRANSCRIBE_TIMEOUT_MS = positiveInteger(process.env.GROQ_TRANSCRIBE_TIMEOUT_MS, 180_000);
 const MAX_ATTEMPTS = positiveInteger(process.env.GROQ_TRANSCRIBE_ATTEMPTS, 4);
+const MEDIA_PREP_TIMEOUT_MS = positiveInteger(process.env.TRANSCRIBE_MEDIA_TIMEOUT_MS, 5 * 60_000);
+const PROBE_TIMEOUT_MS = positiveInteger(process.env.FFPROBE_TIMEOUT_MS, 30_000);
 
 function positiveInteger(value, fallback) {
   const parsed = Number.parseInt(value, 10);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-/** Cuts [startSec, startSec+durationSec) out of audioPath into outPath. */
-function cutChunk(audioPath, startSec, durationSec, outPath) {
+function abortReason(signal) {
+  return signal?.reason instanceof Error
+    ? signal.reason
+    : new DOMException("Transcription was cancelled.", "AbortError");
+}
+
+function killProcessTree(proc) {
+  if (!proc.pid) return;
+  try {
+    if (process.platform !== "win32") process.kill(-proc.pid, "SIGKILL");
+    else proc.kill("SIGKILL");
+  } catch {
+    try {
+      proc.kill("SIGKILL");
+    } catch {
+      // It may have exited between the state check and kill.
+    }
+  }
+}
+
+function runMediaProcess(cmd, args, { signal, timeoutMs, label }) {
+  signal?.throwIfAborted();
   return new Promise((resolve, reject) => {
-    const proc = spawn("ffmpeg", [
+    const proc = spawn(cmd, args, { detached: process.platform !== "win32" });
+    let stdout = "";
+    let stderr = "";
+    let aborted = false;
+    let timedOut = false;
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      callback(value);
+    };
+    const onAbort = () => {
+      aborted = true;
+      killProcessTree(proc);
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      killProcessTree(proc);
+    }, timeoutMs);
+    timer.unref?.();
+
+    proc.stdout.on("data", (d) => {
+      stdout = `${stdout}${d}`.slice(-4000);
+    });
+    proc.stderr.on("data", (d) => {
+      stderr = `${stderr}${d}`.slice(-4000);
+    });
+    proc.on("error", (err) => finish(reject, new Error(`Failed to start ${cmd}. Is it installed? (${err.message})`)));
+    proc.on("close", (code) => {
+      if (aborted) return finish(reject, abortReason(signal));
+      if (timedOut) return finish(reject, new Error(`${label} timed out.`));
+      if (code !== 0) return finish(reject, new Error(`${label} failed: ${stderr.trim().slice(-1000)}`));
+      finish(resolve, { stdout, stderr });
+    });
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/** Cuts [startSec, startSec+durationSec) out of audioPath into outPath. */
+async function cutChunk(audioPath, startSec, durationSec, outPath, signal) {
+  await runMediaProcess(
+    "ffmpeg",
+    [
       "-y",
       "-ss",
       String(startSec),
@@ -43,21 +110,17 @@ function cutChunk(audioPath, startSec, durationSec, outPath) {
       "-b:a",
       "64k",
       outPath,
-    ]);
-    let stderr = "";
-    proc.stderr.on("data", (d) => (stderr += d.toString()));
-    proc.on("error", (err) => reject(new Error(`Failed to start ffmpeg. Is it installed? (${err.message})`)));
-    proc.on("close", (code) => {
-      if (code !== 0) reject(new Error(`ffmpeg failed cutting a transcription chunk: ${stderr.trim().slice(-1000)}`));
-      else resolve(outPath);
-    });
-  });
+    ],
+    { signal, timeoutMs: MEDIA_PREP_TIMEOUT_MS, label: "ffmpeg transcription chunk extraction" }
+  );
+  return outPath;
 }
 
 /** Returns a media file's duration in seconds via ffprobe. */
-function probeDurationSec(filePath) {
-  return new Promise((resolve, reject) => {
-    const proc = spawn("ffprobe", [
+async function probeDurationSec(filePath, signal) {
+  const { stdout } = await runMediaProcess(
+    "ffprobe",
+    [
       "-v",
       "error",
       "-show_entries",
@@ -65,30 +128,23 @@ function probeDurationSec(filePath) {
       "-of",
       "default=nw=1:nk=1",
       filePath,
-    ]);
-    let stdout = "";
-    let stderr = "";
-    proc.stdout.on("data", (d) => (stdout += d.toString()));
-    proc.stderr.on("data", (d) => (stderr += d.toString()));
-    proc.on("error", (err) => reject(new Error(`Failed to start ffprobe. Is it installed? (${err.message})`)));
-    proc.on("close", (code) => {
-      if (code !== 0) return reject(new Error(`ffprobe failed reading ${filePath}: ${stderr.trim()}`));
-      const value = Number(stdout.trim());
-      if (!Number.isFinite(value) || value <= 0) {
-        return reject(new Error(`ffprobe returned an invalid duration for ${filePath}: "${stdout.trim()}"`));
-      }
-      resolve(value);
-    });
-  });
+    ],
+    { signal, timeoutMs: PROBE_TIMEOUT_MS, label: "ffprobe duration check" }
+  );
+  const value = Number(stdout.trim());
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`ffprobe returned an invalid duration for ${filePath}: "${stdout.trim()}"`);
+  }
+  return value;
 }
 
 /** Sends one audio chunk to Groq's Whisper endpoint, retrying transient failures. */
-async function transcribeChunk(chunkPath) {
+async function transcribeChunk(chunkPath, signal) {
   const data = await groqPostWithRetry(
     "/audio/transcriptions",
     async () => {
       // Rebuilt per attempt: a FormData body can only be consumed once.
-      const buffer = await fs.promises.readFile(chunkPath);
+      const buffer = await fs.promises.readFile(chunkPath, { signal });
       const form = new FormData();
       form.append("file", new Blob([buffer], { type: "audio/mpeg" }), path.basename(chunkPath));
       form.append("model", MODEL);
@@ -96,7 +152,7 @@ async function transcribeChunk(chunkPath) {
       form.append("timestamp_granularities[]", "word");
       return form;
     },
-    { attempts: MAX_ATTEMPTS, timeoutMs: TRANSCRIBE_TIMEOUT_MS, label: "Transcription chunk" }
+    { attempts: MAX_ATTEMPTS, timeoutMs: TRANSCRIBE_TIMEOUT_MS, label: "Transcription chunk", signal }
   );
 
   // verbose_json with word granularity returns a flat `words` array. Fall
@@ -138,15 +194,20 @@ function repairSmearedStarts(words) {
   });
 }
 
-async function mapWithConcurrency(items, limit, worker) {
+async function mapWithConcurrency(items, limit, worker, signal) {
   let nextIndex = 0;
   async function runWorker() {
     while (nextIndex < items.length) {
+      signal?.throwIfAborted();
       const index = nextIndex++;
       await worker(items[index], index);
     }
   }
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, runWorker));
+  const results = await Promise.allSettled(
+    Array.from({ length: Math.min(limit, items.length) }, runWorker)
+  );
+  const failed = results.find((result) => result.status === "rejected");
+  if (failed) throw failed.reason;
 }
 
 /**
@@ -160,9 +221,10 @@ async function mapWithConcurrency(items, limit, worker) {
  * chunk's full duration would actively introduce error — a chunk ending in
  * silence legitimately has its last word finish before the chunk does.
  */
-export async function transcribeAudio(audioPath) {
+export async function transcribeAudio(audioPath, { signal } = {}) {
+  signal?.throwIfAborted();
   requireGroqKey();
-  const totalDurationSec = await probeDurationSec(audioPath);
+  const totalDurationSec = await probeDurationSec(audioPath, signal);
 
   const chunkStarts = [];
   for (let t = 0; t < totalDurationSec; t += CHUNK_SEC) chunkStarts.push(t);
@@ -170,14 +232,15 @@ export async function transcribeAudio(audioPath) {
 
   const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "groq-transcribe-"));
   try {
+    signal?.throwIfAborted();
     const chunkWords = new Array(chunkStarts.length);
 
     await mapWithConcurrency(chunkStarts, TRANSCRIBE_CONCURRENCY, async (start, i) => {
       const duration = Math.min(CHUNK_SEC, totalDurationSec - start);
       const chunkPath = path.join(tmpDir, `chunk_${i}.mp3`);
       try {
-        await cutChunk(audioPath, start, duration, chunkPath);
-        const words = await transcribeChunk(chunkPath);
+        await cutChunk(audioPath, start, duration, chunkPath, signal);
+        const words = await transcribeChunk(chunkPath, signal);
         const normalized = words
           .map((w) => ({
             word: String(w.word ?? "").trim(),
@@ -193,7 +256,7 @@ export async function transcribeAudio(audioPath) {
       } finally {
         await fs.promises.rm(chunkPath, { force: true }).catch(() => {});
       }
-    });
+    }, signal);
 
     return chunkWords.flat();
   } finally {
