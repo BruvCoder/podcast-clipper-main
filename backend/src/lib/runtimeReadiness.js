@@ -54,6 +54,39 @@ function proxyRequirement(environment = process.env) {
 }
 
 /**
+ * Reports whether face-guided cropping is usable: the Python interpreter, the
+ * cv2 import, and the model file all have to be present. Never gates overall
+ * readiness — the renderer falls back to a centre crop, so a missing detector
+ * degrades clip framing rather than breaking the service.
+ */
+function faceDetectionAvailability(environment = process.env, spawn = spawnSync) {
+  const python =
+    String(environment.PYTHON_BIN || "").trim() || (process.platform === "win32" ? "python" : "python3");
+  const model =
+    String(environment.FACE_MODEL_PATH || "").trim() || "/usr/local/share/vod-clipper/yunet.onnx";
+  try {
+    const result = spawn(
+      python,
+      ["-c", `import cv2,os,sys; sys.exit(0 if os.path.exists(${JSON.stringify(model)}) else 1)`],
+      {
+        encoding: "utf8",
+        // Inherits the environment on purpose, unlike the media-binary probes
+        // above: faceCrop.js spawns Python the same way, and a probe run under
+        // a different environment measures something the renderer never does.
+        // Stripping it here made cv2 unimportable while real detection worked.
+        maxBuffer: MAX_PROBE_OUTPUT_BYTES,
+        shell: false,
+        timeout: PROBE_TIMEOUT_MS,
+        windowsHide: true,
+      }
+    );
+    return { ok: result.status === 0 };
+  } catch {
+    return { ok: false };
+  }
+}
+
+/**
  * Probe external media binaries once during startup and cache the returned
  * object in the server. The result deliberately contains no command paths,
  * stderr, environment values, or other potentially sensitive diagnostics.
@@ -64,13 +97,16 @@ export function inspectRuntimeReadiness(environment = process.env) {
   const ffmpeg = probeBinary("ffmpeg", ["-version"], "ffmpeg", environment);
   const ffprobe = probeBinary("ffprobe", ["-version"], "ffprobe", environment);
   const proxy = proxyRequirement(environment);
+  const faceDetection = faceDetectionAvailability(environment);
 
   return {
+    // faceDetection is intentionally absent from this expression.
     ok: ytDlp.ok && ffmpeg.ok && ffprobe.ok && (!proxy.required || proxy.configured),
     ytDlp,
     ffmpeg,
     ffprobe,
     proxy,
+    faceDetection,
   };
 }
 

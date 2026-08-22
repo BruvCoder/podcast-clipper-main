@@ -1,6 +1,7 @@
 import { spawn } from "child_process";
 import fs from "fs";
 import path from "path";
+import { findCropCentre, cropOffsetX, cropWindow } from "./faceCrop.js";
 
 // ffmpeg/libx264 auto-detect thread count from the host's reported CPU count,
 // which in a container can be the physical host's full core count rather
@@ -114,9 +115,23 @@ export async function createClip(
 
   let vf;
   if (cropMode === "crop") {
-    // Tighter, "zoomed in" center-crop. Cuts off anything outside a 9:16
-    // center slice — only looks right on a single, centered speaker.
-    vf = `crop='min(iw,ih*9/16)':'min(ih,iw*16/9)',scale=1080:1920,ass='${escapedAssPath}'`;
+    // A 9:16 window over a 16:9 frame is much narrower than the source, so
+    // *where* it sits matters more than anything else about this mode. Look for
+    // the speaker and centre on them; findCropCentre returns null whenever it
+    // cannot tell, and then this falls back to the old centre crop.
+    const detected = await findCropCentre(sourcePath, startSec, endSec, { signal });
+    signal?.throwIfAborted();
+
+    // Default expression keeps ffmpeg's own centring when nothing was detected.
+    let cropExpr = "crop='min(iw,ih*9/16)':'min(ih,iw*16/9)'";
+    if (detected) {
+      const { centreX, frameWidth, frameHeight } = detected;
+      const { width, height } = cropWindow(frameWidth, frameHeight);
+      const x = cropOffsetX(centreX, frameWidth, width);
+      const y = Math.max(0, Math.round((frameHeight - height) / 2));
+      cropExpr = `crop=${width}:${height}:${x}:${y}`;
+    }
+    vf = `${cropExpr},scale=1080:1920,ass='${escapedAssPath}'`;
   } else if (cropMode === "pad") {
     // Default: scales the full frame to fit (nothing cropped out), and fills
     // the empty top/bottom bars with a blurred, zoomed copy of the same

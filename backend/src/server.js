@@ -102,6 +102,8 @@ app.get("/api/health", (req, res) => {
     downloaderVersion: runtimeReadiness.ytDlp.version,
     ffmpeg: runtimeReadiness.ffmpeg.ok ? "configured" : "unavailable",
     ffprobe: runtimeReadiness.ffprobe.ok ? "configured" : "unavailable",
+    // Optional: when unavailable, "crop" mode falls back to a centre crop.
+    faceCrop: runtimeReadiness.faceDetection.ok ? "configured" : "unavailable",
     residentialProxy: downloaderProxyEnabled
       ? "configured"
       : runtimeReadiness.proxy.required
