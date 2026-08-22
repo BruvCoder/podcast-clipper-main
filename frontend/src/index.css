@@ -1974,8 +1974,14 @@ input[type="range"]::-moz-range-thumb {
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  padding: 18px 14px;
+  /* Bottom padding clears the iOS home indicator, which otherwise overlaps the
+     account row — the last thing in this column. */
+  padding: 18px 14px max(18px, env(safe-area-inset-bottom));
+  /* 100vh on mobile is the viewport with the browser chrome *retracted*, so a
+     bottom-anchored child sits behind the URL bar and cannot be reached. dvh
+     tracks the actually-visible height; vh stays as the fallback. */
   height: 100vh;
+  height: 100dvh;
   position: sticky;
   top: 0;
 }
@@ -2160,6 +2166,9 @@ input[type="range"]::-moz-range-thumb {
   display: flex;
   align-items: center;
   gap: 9px;
+  /* The history list above is the flexible one; sign-out must never be the
+     thing that gets compressed out of reach on a short screen. */
+  flex-shrink: 0;
 }
 
 .account-avatar {
@@ -2212,6 +2221,7 @@ input[type="range"]::-moz-range-thumb {
   flex: 1;
   min-width: 0;
   height: 100vh;
+  height: 100dvh;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -2262,6 +2272,7 @@ input[type="range"]::-moz-range-thumb {
     left: 0;
     top: 0;
     height: 100vh;
+    height: 100dvh;
     transform: translateX(-100%);
     transition: transform 0.2s ease;
     z-index: 70;
