@@ -46,26 +46,6 @@ const STEPS = [
   },
 ];
 
-function PhoneMock() {
-  return (
-    <div className="phone-mock" aria-hidden="true">
-      <div className="phone-mock-badge">
-        <span className="phone-mock-badge-number">94</span>
-        <span className="phone-mock-badge-label">Score</span>
-      </div>
-      <div className="phone-mock-screen">
-        <div className="phone-mock-scene" />
-        <div className="phone-mock-play">▶</div>
-        <div className="phone-mock-caption">
-          <span>THIS IS THE</span> <span className="phone-mock-caption-hot">MOMENT</span>
-          <br />
-          <span>THAT HOOKS THEM</span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 export default function Landing({ onGetStarted }) {
   return (
     <div className="landing">
@@ -99,9 +79,6 @@ export default function Landing({ onGetStarted }) {
           </div>
         </div>
 
-        <div className="landing-hero-visual">
-          <PhoneMock />
-        </div>
       </div>
 
       <section className="landing-section">
@@ -206,7 +183,7 @@ export default function Landing({ onGetStarted }) {
             clips is minutes away.
           </p>
           <button className="btn-primary close-cta" onClick={onGetStarted}>
-            Sign in to get started
+            Create your first clip
           </button>
           {/* Deliberately not a pricing claim — billing can be switched on
               without anyone remembering to edit this line. */}

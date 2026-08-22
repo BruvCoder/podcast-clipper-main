@@ -1176,13 +1176,19 @@ input[type="range"]::-moz-range-thumb {
   margin-bottom: 40px;
 }
 
+/* Single centred column: the hero previously gave a third of its width to a
+   mocked-up phone, which said less about the product than the real before/after
+   further down does. The copy gets the room instead. */
 .landing-hero {
-  display: grid;
-  grid-template-columns: 1.15fr 0.85fr;
+  display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 36px;
-  padding: 30px 4px 24px;
-  text-align: left;
+  padding: 46px 4px 34px;
+  text-align: center;
+}
+
+.landing-hero-copy {
+  max-width: 660px;
 }
 
 .landing-eyebrow {
@@ -1197,18 +1203,18 @@ input[type="range"]::-moz-range-thumb {
 }
 
 .landing-title {
-  font-size: 44px;
-  line-height: 1.12;
-  margin: 0 0 16px;
-  max-width: 520px;
+  font-size: 48px;
+  line-height: 1.1;
+  margin: 0 auto 18px;
+  max-width: 620px;
 }
 
 .landing-subtitle {
   color: var(--text-muted);
-  font-size: 15.5px;
-  line-height: 1.6;
-  max-width: 460px;
-  margin: 0;
+  font-size: 16px;
+  line-height: 1.62;
+  max-width: 520px;
+  margin: 0 auto;
 }
 
 .landing-cta {
@@ -1220,126 +1226,12 @@ input[type="range"]::-moz-range-thumb {
 .landing-trust-row {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 10px;
   margin-top: 22px;
   font-family: var(--font-mono);
   font-size: 12px;
   color: var(--text-faint);
-}
-
-/* --- Hero phone mockup: shows the actual product output (a captioned,
-   scored vertical clip) instead of an abstract decoration. --- */
-
-.landing-hero-visual {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.phone-mock {
-  position: relative;
-  width: 210px;
-  aspect-ratio: 9 / 19.5;
-  padding: 9px;
-  border-radius: 34px;
-  background: linear-gradient(160deg, var(--surface-3), var(--surface-deep));
-  border: 1px solid var(--border-strong);
-  box-shadow: var(--shadow-modal), 0 0 90px -25px var(--accent-glow);
-  transform: rotate(-4deg);
-  animation: phone-float 6s ease-in-out infinite;
-}
-
-@keyframes phone-float {
-  0%, 100% { transform: rotate(-4deg) translateY(0); }
-  50% { transform: rotate(-4deg) translateY(-12px); }
-}
-
-.phone-mock-screen {
-  position: relative;
-  width: 100%;
-  height: 100%;
-  border-radius: 26px;
-  overflow: hidden;
-}
-
-.phone-mock-scene {
-  position: absolute;
-  inset: 0;
-  background:
-    radial-gradient(circle at 28% 22%, rgba(255, 255, 255, 0.12), transparent 45%),
-    radial-gradient(circle at 74% 78%, var(--accent-glow), transparent 55%),
-    linear-gradient(200deg, var(--surface-3), var(--bg) 75%);
-}
-
-.phone-mock-play {
-  position: absolute;
-  top: 40%;
-  left: 50%;
-  width: 38px;
-  height: 38px;
-  transform: translate(-50%, -50%);
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.14);
-  border: 1px solid rgba(255, 255, 255, 0.3);
-  backdrop-filter: blur(2px);
-  color: white;
-  font-size: 12px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.phone-mock-caption {
-  position: absolute;
-  left: 9%;
-  right: 9%;
-  bottom: 20%;
-  text-align: center;
-  font-family: var(--font-display);
-  font-weight: 700;
-  font-size: 10.5px;
-  line-height: 1.5;
-  letter-spacing: 0.01em;
-  color: white;
-  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7), 0 0 1px rgba(0, 0, 0, 0.9);
-}
-
-.phone-mock-caption-hot {
-  color: var(--accent-hover);
-}
-
-.phone-mock-badge {
-  position: absolute;
-  top: -14px;
-  right: -18px;
-  z-index: 2;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 1px;
-  padding: 8px 13px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-card);
-  animation: phone-float 6s ease-in-out infinite;
-  animation-delay: -2s;
-}
-
-.phone-mock-badge-number {
-  font-family: var(--font-mono);
-  font-weight: 700;
-  font-size: 18px;
-  color: var(--score);
-}
-
-.phone-mock-badge-label {
-  font-size: 8.5px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--text-faint);
-  white-space: nowrap;
 }
 
 .landing-section {
@@ -1385,12 +1277,34 @@ input[type="range"]::-moz-range-thumb {
   gap: 10px;
 }
 
+/* Lifted off the page rather than sitting flat on it: a deep drop shadow plus a
+   slow bob. The two frames use offset delays so they drift independently
+   instead of moving as one block. */
 .ba-frame {
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   overflow: hidden;
   background: black;
   line-height: 0;
+  box-shadow: var(--shadow-card), 0 18px 40px -18px rgba(0, 0, 0, 0.55);
+  animation: ba-float 6s ease-in-out infinite;
+  will-change: transform;
+}
+
+.ba-before .ba-frame {
+  animation-delay: -3s;
+}
+
+@keyframes ba-float {
+  0%, 100% { transform: translateY(-5px); }
+  50% { transform: translateY(5px); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ba-frame {
+    animation: none;
+    transform: none;
+  }
 }
 
 .ba-frame img {
@@ -1660,10 +1574,7 @@ input[type="range"]::-moz-range-thumb {
 
 @media (max-width: 760px) {
   .landing-hero {
-    grid-template-columns: 1fr;
-    text-align: center;
-    gap: 30px;
-    padding-top: 10px;
+    padding-top: 18px;
   }
 
   .steps-row {
@@ -1690,27 +1601,6 @@ input[type="range"]::-moz-range-thumb {
 
   .landing-title {
     font-size: 32px;
-    max-width: 480px;
-    margin-left: auto;
-    margin-right: auto;
-  }
-
-  .landing-subtitle {
-    max-width: 420px;
-    margin-left: auto;
-    margin-right: auto;
-  }
-
-  .landing-trust-row {
-    justify-content: center;
-  }
-
-  .landing-hero-visual {
-    order: -1;
-  }
-
-  .phone-mock {
-    width: 170px;
   }
 
   .feature-grid {
