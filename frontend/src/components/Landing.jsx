@@ -196,6 +196,23 @@ export default function Landing({ onGetStarted }) {
           ))}
         </div>
       </section>
+
+      <section className="landing-section landing-close">
+        <div className="close-panel">
+          <Waveform className="close-mark" bars={5} />
+          <h2>Ready to clip your first episode?</h2>
+          <p>
+            Sign in to get started — paste a YouTube link and your first set of ranked, captioned
+            clips is minutes away.
+          </p>
+          <button className="btn-primary close-cta" onClick={onGetStarted}>
+            Sign in to get started
+          </button>
+          {/* Deliberately not a pricing claim — billing can be switched on
+              without anyone remembering to edit this line. */}
+          <span className="close-note">Works with any public YouTube episode</span>
+        </div>
+      </section>
     </div>
   );
 }
