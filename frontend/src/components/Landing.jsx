@@ -43,25 +43,60 @@ function CheckIcon() {
   );
 }
 
-function PhoneMock() {
+function ExampleTransformation() {
   return (
-    <div className="phone-mock" aria-hidden="true">
-      <div className="phone-mock-badge">
-        <span className="phone-mock-badge-number">94</span>
-        <span className="phone-mock-badge-label">Viral score</span>
-      </div>
-      <div className="phone-mock-screen">
-        <div className="phone-mock-scene" />
-        <div className="phone-mock-speaker" />
-        <div className="phone-mock-play">▶</div>
-        <div className="phone-mock-caption">
-          <span>THIS IS THE</span> <span className="phone-mock-caption-hot">MOMENT</span>
-          <br />
-          <span>THAT HOOKS THEM</span>
+    <section className="landing-transform-demo" aria-label="Example transformation from a full podcast video to a vertical clip">
+      <figure className="demo-source">
+        <div className="demo-landscape-frame">
+          <img
+            src="/podcast-demo-frame.jpg"
+            alt="Two podcast hosts recording a long-form episode"
+            width="1672"
+            height="941"
+            decoding="async"
+            fetchPriority="high"
+          />
+          <span className="demo-play" aria-hidden="true">▶</span>
+          <span className="demo-time">1:24:18</span>
+          <span className="demo-video-progress" aria-hidden="true"><i /></span>
         </div>
-        <div className="phone-mock-progress"><span /></div>
+        <figcaption>
+          <strong>Full podcast episode</strong>
+          <span>16:9 source video</span>
+        </figcaption>
+      </figure>
+
+      <div className="demo-transform-arrow" role="img" aria-label="AI selects and reframes the best moment">
+        <span className="demo-arrow-line" aria-hidden="true" />
+        <span className="demo-arrow-icon" aria-hidden="true"><ArrowIcon /></span>
+        <p>AI picks &amp; reframes</p>
       </div>
-    </div>
+
+      <figure className="demo-output">
+        <div className="demo-phone-frame">
+          <span className="demo-phone-speaker" aria-hidden="true" />
+          <img
+            src="/podcast-demo-frame.jpg"
+            alt="The speaking host reframed into a vertical social clip"
+            width="1672"
+            height="941"
+            decoding="async"
+          />
+          <span className="demo-phone-shade" aria-hidden="true" />
+          <span className="demo-viral-score"><strong>94</strong> viral score</span>
+          <span className="demo-play demo-phone-play" aria-hidden="true">▶</span>
+          <span className="demo-caption">
+            THE BEST IDEAS<br />
+            <em>DESERVE A CLIP</em>
+          </span>
+          <span className="demo-video-progress demo-phone-progress" aria-hidden="true"><i /></span>
+        </div>
+        <figcaption>
+          <strong>Ready-to-post clip</strong>
+          <span>9:16 · captions added</span>
+        </figcaption>
+      </figure>
+    </section>
   );
 }
 
@@ -170,37 +205,7 @@ export default function Landing({ initialUrl = "", onStart, onSignIn, onUrlEdit 
           </div>
         </section>
 
-        <section className="landing-product-preview" aria-label="VOD Clipper product preview">
-          <div className="preview-topbar">
-            <div className="preview-window-controls" aria-hidden="true"><i /><i /><i /></div>
-            <span>VOD Clipper workspace</span>
-            <span className="preview-status"><i /> Ready to publish</span>
-          </div>
-
-          <div className="preview-canvas">
-            <div className="preview-source-card">
-              <div className="preview-thumbnail">
-                <div className="preview-thumbnail-play">▶</div>
-                <Waveform className="preview-source-wave" bars={30} />
-              </div>
-              <strong>The full podcast episode</strong>
-              <small>1:24:18 · Transcript analyzed</small>
-            </div>
-
-            <div className="preview-flow" aria-hidden="true">
-              <Waveform className="preview-flow-wave" bars={18} />
-              <span><ArrowIcon /></span>
-            </div>
-
-            <PhoneMock />
-
-            <div className="preview-insight-card">
-              <strong>“A clean, standalone hook”</strong>
-              <p>High curiosity · Clear payoff</p>
-              <div className="preview-score-line"><span style={{ width: "94%" }} /></div>
-            </div>
-          </div>
-        </section>
+        <ExampleTransformation />
 
         <section className="landing-section landing-features" id="features">
           <div className="landing-section-head">
