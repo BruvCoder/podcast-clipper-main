@@ -1,7 +1,6 @@
 import { spawn } from "child_process";
 import fs from "fs";
 import path from "path";
-import { buildFfmpegHeaderString } from "./rapidapi.js";
 
 // ffmpeg/libx264 auto-detect thread count from the host's reported CPU count,
 // which in a container can be the physical host's full core count rather
@@ -9,39 +8,78 @@ import { buildFfmpegHeaderString } from "./rapidapi.js";
 // over-threaded encodes that spike memory and get OOM-killed. Cap explicitly.
 const FFMPEG_THREADS = process.env.FFMPEG_THREADS || "2";
 
-// Each render now reads its video input directly from a remote URL (see
-// createClip below), so unlike a purely-local ffmpeg pass this can hang on
-// a stalled network read. Bound it well below the job's overall timeouts —
-// a single short clip has no legitimate reason to take this long.
+// Bound each render well below the job's overall timeout. A single short
+// local-source clip has no legitimate reason to take this long.
 const FFMPEG_RENDER_TIMEOUT_MS =
   Number.parseInt(process.env.FFMPEG_RENDER_TIMEOUT_MS, 10) || 5 * 60_000;
+const FFPROBE_TIMEOUT_MS = Number.parseInt(process.env.FFPROBE_TIMEOUT_MS, 10) || 30_000;
 
-function run(cmd, args) {
+function abortReason(signal, fallback = "Media processing was cancelled.") {
+  return signal?.reason instanceof Error
+    ? signal.reason
+    : new DOMException(fallback, "AbortError");
+}
+
+function killProcessTree(proc) {
+  if (!proc.pid) return;
+  try {
+    if (process.platform !== "win32") process.kill(-proc.pid, "SIGKILL");
+    else proc.kill("SIGKILL");
+  } catch {
+    try {
+      proc.kill("SIGKILL");
+    } catch {
+      // It may have exited between the state check and kill.
+    }
+  }
+}
+
+function run(cmd, args, { signal, timeoutMs = FFMPEG_RENDER_TIMEOUT_MS } = {}) {
+  signal?.throwIfAborted();
   return new Promise((resolve, reject) => {
-    const proc = spawn(cmd, args);
+    const proc = spawn(cmd, args, { detached: process.platform !== "win32" });
     let stderr = "";
     let timedOut = false;
+    let aborted = false;
+    let settled = false;
+
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      callback(value);
+    };
+    const onAbort = () => {
+      aborted = true;
+      killProcessTree(proc);
+    };
     const timer = setTimeout(() => {
       timedOut = true;
-      proc.kill("SIGKILL");
-    }, FFMPEG_RENDER_TIMEOUT_MS);
+      killProcessTree(proc);
+    }, timeoutMs);
     timer.unref?.();
 
-    proc.stderr.on("data", (d) => (stderr += d.toString()));
+    proc.stderr.on("data", (d) => {
+      stderr = `${stderr}${d}`.slice(-4000);
+    });
     proc.on("error", (err) => {
-      clearTimeout(timer);
-      reject(new Error(`Failed to start ${cmd}. Is it installed? (${err.message})`));
+      finish(reject, new Error(`Failed to start ${cmd}. Is it installed? (${err.message})`));
     });
     proc.on("close", (code) => {
-      clearTimeout(timer);
-      if (timedOut) {
-        reject(new Error(`${cmd} timed out after ${Math.round(FFMPEG_RENDER_TIMEOUT_MS / 1000)}s`));
+      if (aborted) {
+        finish(reject, abortReason(signal));
+      } else if (timedOut) {
+        finish(reject, new Error(`${cmd} timed out after ${Math.round(timeoutMs / 1000)}s`));
       } else if (code !== 0) {
-        reject(new Error(`${cmd} exited with ${code}: ${stderr.slice(-2000)}`));
+        finish(reject, new Error(`${cmd} exited with ${code}: ${stderr.slice(-2000)}`));
       } else {
-        resolve();
+        finish(resolve);
       }
     });
+
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 
@@ -49,23 +87,28 @@ function run(cmd, args) {
  * Cuts a segment [startSec, endSec) from the source, reframes to 9:16, and
  * burns in styled ASS subtitles — all in a single ffmpeg pass.
  *
- * The video comes straight from a remote URL (ffmpeg seeks to startSec and
- * only reads that window over the network — the full source video is never
- * downloaded), while the audio comes from the local track already fetched
- * for transcription. `videoSource` is `{ url, headers }` from
- * `rapidapi.js`'s `prepareSources`.
+ * yt-dlp has already downloaded and merged the source locally. FFmpeg seeks
+ * into that one file, then reframes and subtitles only this clip's window.
  */
 export async function createClip(
-  videoSource,
-  audioPath,
+  sourcePath,
   words,
   startSec,
   endSec,
   outPath,
-  { cropMode = "pad", subtitleColor = "#FFFFFF" } = {}
+  { cropMode = "pad", subtitleColor = "#FFFFFF", signal } = {}
 ) {
+  signal?.throwIfAborted();
   const duration = Math.max(0.5, endSec - startSec);
   const assPath = outPath.replace(/\.mp4$/, ".ass");
+  // The public file route only accepts clip_N.mp4. Render and validate under
+  // a non-public name, then publish with one atomic rename so a failed or
+  // interrupted ffmpeg process can never leave a corrupt downloadable clip.
+  const temporaryOutPath = outPath.replace(/\.mp4$/, ".partial.mp4");
+  await Promise.all([
+    fs.promises.rm(outPath, { force: true }),
+    fs.promises.rm(temporaryOutPath, { force: true }),
+  ]);
   buildAssSubtitles(words, startSec, endSec, assPath, subtitleColor);
   const escapedAssPath = escapeForFilterPath(assPath);
 
@@ -89,88 +132,100 @@ export async function createClip(
     throw new Error(`Unknown cropMode: ${cropMode} (expected "pad" or "crop")`);
   }
 
-  // videoSource.url is a loopback relay URL (see videoRelay.js) — ffmpeg
-  // cannot fetch YouTube's CDN directly, so Node does that leg. Upstream
-  // headers are applied by the relay, not here.
-  const videoInputArgs = [];
-  if (videoSource.headers && Object.keys(videoSource.headers).length) {
-    videoInputArgs.push("-headers", buildFfmpegHeaderString(videoSource.headers));
+  try {
+    await run(
+      "ffmpeg",
+      [
+        "-y",
+        "-ss",
+        String(startSec),
+        "-i",
+        sourcePath,
+        "-t",
+        String(duration),
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a:0",
+        "-vf",
+        vf,
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "20",
+        "-threads",
+        FFMPEG_THREADS,
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+        temporaryOutPath,
+      ],
+      { signal }
+    );
+
+    signal?.throwIfAborted();
+    await assertRenderedClip(temporaryOutPath, duration, signal);
+    signal?.throwIfAborted();
+    await fs.promises.rename(temporaryOutPath, outPath);
+    return outPath;
+  } finally {
+    await Promise.all([
+      fs.promises.rm(assPath, { force: true }).catch(() => {}),
+      fs.promises.rm(temporaryOutPath, { force: true }).catch(() => {}),
+    ]);
   }
-  videoInputArgs.push(
-    // Auto-retry a dropped/stalled connection instead of failing the whole
-    // render over a transient network hiccup.
-    "-reconnect",
-    "1",
-    "-reconnect_streamed",
-    "1",
-    "-reconnect_delay_max",
-    "5",
-    "-ss",
-    String(startSec),
-    "-i",
-    videoSource.url
-  );
-
-  await run("ffmpeg", [
-    "-y",
-    ...videoInputArgs,
-    "-ss",
-    String(startSec),
-    "-i",
-    audioPath,
-    "-t",
-    String(duration),
-    "-map",
-    "0:v:0",
-    "-map",
-    "1:a:0",
-    "-vf",
-    vf,
-    "-c:v",
-    "libx264",
-    "-preset",
-    "veryfast",
-    "-crf",
-    "20",
-    "-threads",
-    FFMPEG_THREADS,
-    "-c:a",
-    "aac",
-    "-b:a",
-    "192k",
-    outPath,
-  ]);
-
-  fs.unlinkSync(assPath);
-  await assertRenderedClip(outPath, duration);
-  return outPath;
 }
 
 /** Reads a rendered file's stream types and duration via ffprobe. */
-function probeRendered(filePath) {
+function probeRendered(filePath, signal) {
+  signal?.throwIfAborted();
   return new Promise((resolve, reject) => {
-    const proc = spawn("ffprobe", [
-      "-v",
-      "error",
-      "-show_entries",
-      "format=duration:stream=codec_type",
-      "-of",
-      "json",
-      filePath,
-    ]);
+    const proc = spawn(
+      "ffprobe",
+      ["-v", "error", "-show_entries", "format=duration:stream=codec_type", "-of", "json", filePath],
+      { detached: process.platform !== "win32" }
+    );
     let stdout = "";
     let stderr = "";
+    let settled = false;
+    let aborted = false;
+    let timedOut = false;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      callback(value);
+    };
+    const onAbort = () => {
+      aborted = true;
+      killProcessTree(proc);
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      killProcessTree(proc);
+    }, FFPROBE_TIMEOUT_MS);
+    timer.unref?.();
     proc.stdout.on("data", (d) => (stdout += d.toString()));
     proc.stderr.on("data", (d) => (stderr += d.toString()));
-    proc.on("error", (err) => reject(new Error(`Failed to start ffprobe: ${err.message}`)));
+    proc.on("error", (err) => finish(reject, new Error(`Failed to start ffprobe: ${err.message}`)));
     proc.on("close", (code) => {
-      if (code !== 0) return reject(new Error(`ffprobe failed on the rendered clip: ${stderr.trim().slice(-300)}`));
+      if (aborted) return finish(reject, abortReason(signal));
+      if (timedOut) return finish(reject, new Error("ffprobe timed out reading the rendered clip."));
+      if (code !== 0) {
+        return finish(reject, new Error(`ffprobe failed on the rendered clip: ${stderr.trim().slice(-300)}`));
+      }
       try {
-        resolve(JSON.parse(stdout));
+        finish(resolve, JSON.parse(stdout));
       } catch (err) {
-        reject(new Error(`ffprobe returned invalid JSON for the rendered clip: ${err.message}`));
+        finish(reject, new Error(`ffprobe returned invalid JSON for the rendered clip: ${err.message}`));
       }
     });
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 
@@ -180,8 +235,8 @@ function probeRendered(filePath) {
  * audio-only "clip" to a user before this check existed. A render is only
  * finished if it actually contains both streams and is about as long as asked.
  */
-async function assertRenderedClip(outPath, expectedDurationSec) {
-  const info = await probeRendered(outPath);
+async function assertRenderedClip(outPath, expectedDurationSec, signal) {
+  const info = await probeRendered(outPath, signal);
   const kinds = new Set((info.streams || []).map((s) => s.codec_type));
   if (!kinds.has("video")) {
     throw new Error(
