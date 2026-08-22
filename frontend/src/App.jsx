@@ -8,6 +8,7 @@ import Auth from "./components/Auth.jsx";
 import Sidebar from "./components/Sidebar.jsx";
 import BillingGate from "./components/BillingGate.jsx";
 import { subscriptionIsActive } from "./billing.js";
+import { isValidYouTubeUrl } from "./youtube.js";
 import { useAuth } from "./AuthContext.jsx";
 import {
   createBillingCheckout,
@@ -20,6 +21,48 @@ import {
 } from "./api.js";
 
 const THEME_KEY = "pc-theme";
+const PENDING_YOUTUBE_URL_KEY = "pc-pending-youtube-url";
+
+function getPendingYouTubeState() {
+  const empty = { url: "", ownerUid: "" };
+  if (typeof sessionStorage === "undefined") return empty;
+  try {
+    const rawValue = sessionStorage.getItem(PENDING_YOUTUBE_URL_KEY);
+    if (!rawValue) return empty;
+
+    let stored;
+    try {
+      stored = JSON.parse(rawValue);
+    } catch {
+      stored = rawValue;
+    }
+
+    const url = (typeof stored === "string" ? stored : stored?.url)?.trim() || "";
+    const ownerUid = typeof stored?.ownerUid === "string" ? stored.ownerUid : "";
+    return isValidYouTubeUrl(url) ? { url, ownerUid } : empty;
+  } catch {
+    return empty;
+  }
+}
+
+function getAnonymousPendingYouTubeUrl() {
+  const pending = getPendingYouTubeState();
+  return pending.ownerUid ? "" : pending.url;
+}
+
+function setPendingYouTubeUrl(value, ownerUid = "") {
+  if (typeof sessionStorage === "undefined") return;
+  try {
+    if (value) {
+      sessionStorage.setItem(PENDING_YOUTUBE_URL_KEY, JSON.stringify({ url: value, ownerUid }));
+    } else {
+      sessionStorage.removeItem(PENDING_YOUTUBE_URL_KEY);
+    }
+  } catch {
+    // Session storage can be unavailable in privacy-restricted browsers.
+  }
+}
+
 function getInitialTheme() {
   const saved = typeof localStorage !== "undefined" ? localStorage.getItem(THEME_KEY) : null;
   if (saved === "dark" || saved === "light") return saved;
@@ -38,8 +81,8 @@ export default function App() {
 
   const [theme, setTheme] = useState(getInitialTheme);
   const [signedOutView, setSignedOutView] = useState("landing");
-  const [mainStep, setMainStep] = useState("url");
-  const [youtubeUrl, setYoutubeUrl] = useState("");
+  const [mainStep, setMainStep] = useState(() => (getAnonymousPendingYouTubeUrl() ? "options" : "url"));
+  const [youtubeUrl, setYoutubeUrl] = useState(getAnonymousPendingYouTubeUrl);
   const [job, setJob] = useState(null);
   const [activeJobId, setActiveJobId] = useState(null);
   const [jobsList, setJobsList] = useState([]);
@@ -56,6 +99,7 @@ export default function App() {
   const billingEnabled = billingStatus?.enabled === true;
   const billingActive = subscriptionIsActive(billingStatus);
   const hasAppAccess = billingReady && (!billingEnabled || billingActive);
+  const showingLanding = !authLoading && !user && signedOutView === "landing";
 
   useEffect(() => {
     return () => clearInterval(pollRef.current);
@@ -66,14 +110,26 @@ export default function App() {
     localStorage.setItem(THEME_KEY, theme);
   }, [theme]);
 
+  useEffect(() => {
+    const themeColor = document.querySelector('meta[name="theme-color"]');
+    if (!themeColor) return;
+    themeColor.setAttribute(
+      "content",
+      showingLanding ? "#f8fbff" : theme === "dark" ? "#0a0e16" : "#f3f7fd",
+    );
+  }, [showingLanding, theme]);
+
   // Reset all app-local state on sign-out (user === null, as opposed to
   // undefined which just means auth is still loading).
   useEffect(() => {
     if (user === null) {
+      const pendingYouTubeState = getPendingYouTubeState();
+      const pendingYouTubeUrl = pendingYouTubeState.ownerUid ? "" : pendingYouTubeState.url;
+      if (pendingYouTubeState.ownerUid) setPendingYouTubeUrl("");
       clearInterval(pollRef.current);
       setSignedOutView("landing");
-      setMainStep("url");
-      setYoutubeUrl("");
+      setMainStep(pendingYouTubeUrl ? "options" : "url");
+      setYoutubeUrl(pendingYouTubeUrl);
       setJob(null);
       setActiveJobId(null);
       setJobsList([]);
@@ -84,6 +140,21 @@ export default function App() {
       setBillingAction(null);
       setCheckoutConfirmationPending(false);
     }
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) return;
+    const pendingYouTubeState = getPendingYouTubeState();
+    if (!pendingYouTubeState.url) return;
+    if (pendingYouTubeState.ownerUid && pendingYouTubeState.ownerUid !== user.uid) {
+      setPendingYouTubeUrl("");
+      setYoutubeUrl("");
+      setMainStep("url");
+      return;
+    }
+    setPendingYouTubeUrl(pendingYouTubeState.url, user.uid);
+    setYoutubeUrl(pendingYouTubeState.url);
+    setMainStep("options");
   }, [user]);
 
   useEffect(() => {
@@ -243,6 +314,7 @@ export default function App() {
 
   function handleNewClip() {
     clearInterval(pollRef.current);
+    setPendingYouTubeUrl("");
     setActiveJobId(null);
     setJob(null);
     setYoutubeUrl("");
@@ -252,11 +324,40 @@ export default function App() {
   }
 
   function handleUrlNext(url) {
-    setYoutubeUrl(url);
+    const normalizedUrl = url.trim();
+    if (!user) setPendingYouTubeUrl(normalizedUrl);
+    else setPendingYouTubeUrl("");
+    setYoutubeUrl(normalizedUrl);
     setMainStep("options");
   }
 
+  function handleLandingStart(url) {
+    handleUrlNext(url);
+    setSignedOutView("auth");
+  }
+
+  function handleLandingUrlEdit(value) {
+    if (value.trim() === youtubeUrl) return;
+    setPendingYouTubeUrl("");
+    setYoutubeUrl("");
+    setMainStep("url");
+  }
+
+  function handleLandingSignIn() {
+    setPendingYouTubeUrl("");
+    setYoutubeUrl("");
+    setMainStep("url");
+    setSignedOutView("auth");
+  }
+
+  function handleOptionsBack() {
+    setPendingYouTubeUrl("");
+    setYoutubeUrl("");
+    setMainStep("url");
+  }
+
   async function handleSubmitOptions(options) {
+    setPendingYouTubeUrl("");
     setError(null);
     setMainStep("loading");
     try {
@@ -286,6 +387,7 @@ export default function App() {
   }
 
   async function handleSelectHistoryJob(id) {
+    setPendingYouTubeUrl("");
     setSidebarOpen(false);
     setActiveJobId(id);
     setError(null);
@@ -313,14 +415,16 @@ export default function App() {
       <div className="app-grain" />
       <div className="app-vignette" />
 
-      <button
-        className="theme-toggle"
-        onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
-        aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-        title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-      >
-        {theme === "dark" ? <SunIcon /> : <MoonIcon />}
-      </button>
+      {!showingLanding && (
+        <button
+          className="theme-toggle"
+          onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+          aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+          title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+        >
+          {theme === "dark" ? <SunIcon /> : <MoonIcon />}
+        </button>
+      )}
 
       {authLoading && (
         <div className="centered-shell">
@@ -329,9 +433,14 @@ export default function App() {
       )}
 
       {!authLoading && !user && (
-        <div className="centered-shell">
+        <div className={`centered-shell ${signedOutView === "landing" ? "landing-shell" : ""}`}>
           {signedOutView === "landing" ? (
-            <Landing onGetStarted={() => setSignedOutView("auth")} />
+            <Landing
+              initialUrl={youtubeUrl}
+              onSignIn={handleLandingSignIn}
+              onStart={handleLandingStart}
+              onUrlEdit={handleLandingUrlEdit}
+            />
           ) : (
             <Auth onBack={() => setSignedOutView("landing")} />
           )}
@@ -391,7 +500,7 @@ export default function App() {
                 </div>
               )}
               {mainStep === "options" && (
-                <Options onBack={() => setMainStep("url")} onSubmit={handleSubmitOptions} />
+                <Options onBack={handleOptionsBack} onSubmit={handleSubmitOptions} />
               )}
               {mainStep === "loading" && <Loading stage={job?.stage} />}
               {mainStep === "results" && job && <Results job={job} onRestart={handleNewClip} />}

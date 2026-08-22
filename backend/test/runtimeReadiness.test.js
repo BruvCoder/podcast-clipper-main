@@ -46,6 +46,7 @@ test("reports working yt-dlp, ffmpeg, and ffprobe versions without leaking confi
     ffmpeg: { ok: true, version: "7.1" },
     ffprobe: { ok: true, version: "7.1" },
     proxy: { configured: true, required: true },
+    faceDetection: { ok: false },
   });
   assert.doesNotMatch(JSON.stringify(result), new RegExp(`${secret}|${directory}|sk_secret`));
 });
