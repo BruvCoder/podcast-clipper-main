@@ -1315,41 +1315,6 @@ input[type="range"]::-moz-range-thumb {
   text-align: center;
 }
 
-.landing-announcement {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 9px 6px 7px;
-  border: 1px solid rgba(13, 20, 32, 0.1);
-  border-radius: 999px;
-  color: #485467;
-  background: rgba(255, 255, 255, 0.78);
-  box-shadow: 0 12px 35px -24px rgba(13, 20, 32, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.9);
-  backdrop-filter: blur(12px);
-  font-size: 12px;
-}
-
-.landing-announcement > span {
-  padding: 4px 8px;
-  border-radius: 999px;
-  color: #ffffff;
-  background: var(--accent);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.landing-announcement p {
-  margin: 0;
-}
-
-.landing-announcement svg {
-  width: 15px;
-  height: 15px;
-  color: var(--accent);
-}
-
 .landing-shell .landing-title {
   max-width: 980px;
   margin: 29px auto 20px;
@@ -1592,17 +1557,6 @@ input[type="range"]::-moz-range-thumb {
 .preview-source-card {
   top: 124px;
   left: 7.5%;
-}
-
-.preview-card-kicker {
-  display: block;
-  margin-bottom: 11px;
-  color: var(--accent);
-  font-family: var(--font-mono);
-  font-size: 8.5px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
 }
 
 .preview-thumbnail {
@@ -1883,17 +1837,6 @@ input[type="range"]::-moz-range-thumb {
   text-align: center;
 }
 
-.landing-shell .landing-eyebrow {
-  display: inline-block;
-  margin: 0 0 13px;
-  color: var(--accent);
-  font-family: var(--font-body);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-}
-
 .landing-shell .landing-section-head h2 {
   margin: 0;
   color: #0d1420;
@@ -2081,11 +2024,6 @@ input[type="range"]::-moz-range-thumb {
   width: 4px;
 }
 
-.landing-bottom-cta .landing-eyebrow {
-  position: relative;
-  color: #8fb4ff;
-}
-
 .landing-bottom-cta h2 {
   position: relative;
   margin: 7px 0 25px;
@@ -2204,15 +2142,6 @@ input[type="range"]::-moz-range-thumb {
 
   .landing-shell .landing-hero {
     padding: 48px 0 20px;
-  }
-
-  .landing-announcement {
-    gap: 7px;
-    font-size: 10.5px;
-  }
-
-  .landing-announcement svg {
-    display: none;
   }
 
   .landing-shell .landing-title {

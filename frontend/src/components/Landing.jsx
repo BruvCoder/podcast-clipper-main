@@ -147,12 +147,6 @@ export default function Landing({ initialUrl = "", onStart, onSignIn, onUrlEdit 
 
       <main>
         <section className="landing-hero" aria-labelledby="landing-title">
-          <div className="landing-announcement">
-            <span>New</span>
-            <p>One link in. Ready-to-post clips out.</p>
-            <ArrowIcon />
-          </div>
-
           <h1 id="landing-title" className="landing-title">
             Turn long-form video into <em>clips people stop for.</em>
           </h1>
@@ -185,7 +179,6 @@ export default function Landing({ initialUrl = "", onStart, onSignIn, onUrlEdit 
 
           <div className="preview-canvas">
             <div className="preview-source-card">
-              <span className="preview-card-kicker">Source video</span>
               <div className="preview-thumbnail">
                 <div className="preview-thumbnail-play">▶</div>
                 <Waveform className="preview-source-wave" bars={30} />
@@ -202,7 +195,6 @@ export default function Landing({ initialUrl = "", onStart, onSignIn, onUrlEdit 
             <PhoneMock />
 
             <div className="preview-insight-card">
-              <span className="preview-card-kicker">AI selection</span>
               <strong>“A clean, standalone hook”</strong>
               <p>High curiosity · Clear payoff</p>
               <div className="preview-score-line"><span style={{ width: "94%" }} /></div>
@@ -212,7 +204,6 @@ export default function Landing({ initialUrl = "", onStart, onSignIn, onUrlEdit 
 
         <section className="landing-section landing-features" id="features">
           <div className="landing-section-head">
-            <span className="landing-eyebrow">Built for the whole workflow</span>
             <h2>From one long video to your best short-form content.</h2>
             <p>Everything tedious happens in the background. You stay focused on choosing what to publish.</p>
           </div>
@@ -233,7 +224,6 @@ export default function Landing({ initialUrl = "", onStart, onSignIn, onUrlEdit 
 
         <section className="landing-section landing-steps" id="how-it-works">
           <div className="landing-section-head compact">
-            <span className="landing-eyebrow">How it works</span>
             <h2>Four steps. Zero timeline editing.</h2>
           </div>
           <div className="steps-row">
@@ -251,7 +241,6 @@ export default function Landing({ initialUrl = "", onStart, onSignIn, onUrlEdit 
 
         <section className="landing-bottom-cta">
           <Waveform className="bottom-cta-wave" bars={32} />
-          <span className="landing-eyebrow">Your next clip is already in the episode</span>
           <h2>Find it in minutes.</h2>
           <button type="button" onClick={() => document.getElementById("landing-youtube-url")?.focus()}>
             Paste your first link <ArrowIcon />
