@@ -1361,6 +1361,127 @@ input[type="range"]::-moz-range-thumb {
   margin: 8px 0 0;
 }
 
+.landing-section-sub {
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1.55;
+  margin: 12px 0 0;
+}
+
+/* --- Before / after --- */
+
+.ba-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 26px;
+  flex-wrap: wrap;
+}
+
+.ba-item {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ba-frame {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: black;
+  line-height: 0;
+}
+
+.ba-frame img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* Equal heights would force the vertical frame down to ~133px wide, too small
+   to read the caption. Instead the widths are matched to the source shapes and
+   the row centres them, so the "after" stands taller — which is the point. */
+.ba-frame-wide {
+  width: min(420px, 78vw);
+}
+
+.ba-frame-tall {
+  width: min(236px, 46vw);
+}
+
+.ba-after .ba-frame {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-soft), 0 14px 34px rgba(0, 0, 0, 0.35);
+}
+
+.ba-item figcaption {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.ba-tag {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+}
+
+.ba-tag-accent {
+  background: var(--accent-soft);
+  border-color: transparent;
+  color: var(--accent-hover);
+}
+
+.ba-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.ba-arrow {
+  color: var(--accent);
+  flex-shrink: 0;
+  width: 40px;
+}
+
+.ba-arrow svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.ba-note {
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 20px 0 0;
+}
+
+/* Stacked on narrow screens, so the arrow has to point down instead. */
+@media (max-width: 680px) {
+  .ba-row {
+    flex-direction: column;
+    gap: 18px;
+  }
+  .ba-arrow {
+    transform: rotate(90deg);
+    width: 32px;
+  }
+  .ba-frame-wide {
+    width: min(340px, 82vw);
+  }
+  .ba-frame-tall {
+    width: min(200px, 52vw);
+  }
+}
+
 .feature-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
