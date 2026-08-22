@@ -31,6 +31,21 @@ function ScoreRing({ score }) {
   );
 }
 
+function ChevronIcon({ open }) {
+  return (
+    <svg
+      className={`transcript-chevron ${open ? "open" : ""}`}
+      width="12"
+      height="12"
+      viewBox="0 0 16 16"
+      fill="none"
+      aria-hidden="true"
+    >
+      <path d="M6 3.5 10.5 8 6 12.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 function DownloadIcon() {
   return (
     <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -49,7 +64,11 @@ function DownloadIcon() {
 
 export default function ClipDetail({ clip, rank, onClose }) {
   const [wordsOnly, setWordsOnly] = useState(false);
+  // The transcript is the longest thing in this panel and pushed the download
+  // button out of sight, so it starts collapsed and opens on request.
+  const [showTranscript, setShowTranscript] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const cueCount = clip.transcript?.length || 0;
 
   // A plain <a download> is silently ignored by browsers when the URL is
   // cross-origin (frontend and backend live on different Railway domains),
@@ -111,27 +130,38 @@ export default function ClipDetail({ clip, rank, onClose }) {
 
             <div className="detail-section transcript-section">
               <div className="transcript-header">
-                <span className="detail-section-label">Transcript</span>
-                <label className="pill-toggle">
-                  <input type="checkbox" checked={wordsOnly} onChange={(e) => setWordsOnly(e.target.checked)} />
-                  <span className="pill-toggle-track">
-                    <span className="pill-toggle-thumb" />
-                  </span>
-                  Hide timestamps
-                </label>
-              </div>
+                <button
+                  className="transcript-disclosure"
+                  onClick={() => setShowTranscript((open) => !open)}
+                  aria-expanded={showTranscript}
+                >
+                  <ChevronIcon open={showTranscript} />
+                  <span className="detail-section-label">Transcript</span>
+                  {cueCount > 0 && <span className="transcript-count">{cueCount} lines</span>}
+                </button>
 
-              <div className="transcript-timeline">
-                {(clip.transcript || []).map((cue, i) => (
-                  <div className="transcript-row" key={i}>
-                    {!wordsOnly && <span className="transcript-time">{formatTime(cue.start)}</span>}
-                    <span className="transcript-text">{cue.text}</span>
-                  </div>
-                ))}
-                {!clip.transcript?.length && (
-                  <p className="cue-empty">No transcript available for this clip.</p>
+                {showTranscript && cueCount > 0 && (
+                  <label className="pill-toggle">
+                    <input type="checkbox" checked={wordsOnly} onChange={(e) => setWordsOnly(e.target.checked)} />
+                    <span className="pill-toggle-track">
+                      <span className="pill-toggle-thumb" />
+                    </span>
+                    Hide timestamps
+                  </label>
                 )}
               </div>
+
+              {showTranscript && (
+                <div className="transcript-timeline">
+                  {(clip.transcript || []).map((cue, i) => (
+                    <div className="transcript-row" key={i}>
+                      {!wordsOnly && <span className="transcript-time">{formatTime(cue.start)}</span>}
+                      <span className="transcript-text">{cue.text}</span>
+                    </div>
+                  ))}
+                  {cueCount === 0 && <p className="cue-empty">No transcript available for this clip.</p>}
+                </div>
+              )}
             </div>
           </div>
 

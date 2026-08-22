@@ -558,11 +558,15 @@ input[type="range"]::-moz-range-thumb {
   margin-bottom: 6px;
 }
 
+/* Cards are 9:16, so their width drives their height at a 16/9 multiplier — a
+   220px column was ~390px tall before its caption, and four of those buried the
+   page. Narrower columns fit a full set on screen at once, which is the point
+   of a results grid. */
 .results-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 18px;
-  margin-top: 22px;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px;
+  margin-top: 20px;
 }
 
 .clip-card {
@@ -642,36 +646,50 @@ input[type="range"]::-moz-range-thumb {
 }
 
 .clip-meta {
-  padding: 13px;
+  padding: 9px 10px 10px;
 }
 
 .rank-badge {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 5px;
   background: var(--accent-soft);
   color: var(--accent-hover);
   font-family: var(--font-mono);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
-  padding: 4px 9px;
+  padding: 3px 7px;
   border-radius: 999px;
-  margin-bottom: 9px;
+  margin-bottom: 6px;
 }
 
 .clip-title {
   font-family: var(--font-display);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
-  margin: 0 0 6px;
+  margin: 0 0 4px;
   line-height: 1.3;
+  /* Two lines keeps every card the same height however long the title is. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
+/* The full reasoning is a paragraph, and printing it on every card was most of
+   the wasted height. Two lines is enough to tell the clips apart; the whole
+   thing is one click away in the detail view. */
 .clip-reason {
-  font-size: 12px;
+  font-size: 11.5px;
   color: var(--text-muted);
   margin: 0;
-  line-height: 1.45;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 /* --- Clip detail: deliberately its own layout, not a video-left/panel-right
@@ -914,6 +932,45 @@ input[type="range"]::-moz-range-thumb {
 
 .transcript-header .detail-section-label {
   margin-bottom: 0;
+}
+
+/* Collapsed by default, so this row is the control that opens it. */
+.transcript-disclosure {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: 0;
+  padding: 2px 0;
+  margin: 0;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.transcript-disclosure:hover .detail-section-label {
+  color: var(--text);
+}
+
+.transcript-chevron {
+  flex-shrink: 0;
+  color: var(--text-muted);
+  transition: transform 0.18s ease;
+}
+
+.transcript-chevron.open {
+  transform: rotate(90deg);
+}
+
+.transcript-count {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  padding: 2px 7px;
+  border-radius: 999px;
 }
 
 .pill-toggle {
