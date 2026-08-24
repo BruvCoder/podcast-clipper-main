@@ -47,8 +47,9 @@ function recurringPrice(overrides = {}) {
     id: "price_pro",
     active: true,
     currency: "usd",
-    unit_amount: 1900,
-    recurring: { interval: "month", interval_count: 1 },
+    unit_amount: 4900,
+    recurring: { interval: "year", interval_count: 1 },
+    livemode: false,
     product: { id: "prod_pro", name: "VOD Clipper Pro" },
     ...overrides,
   };
@@ -218,8 +219,21 @@ function createResponse() {
   };
 }
 
-test("billing is opt-in, but malformed BILLING_ENABLED fails closed", () => {
+test("billing is opt-in locally, but production requires an explicit billing decision", () => {
   assert.deepEqual(loadStripeBillingConfig({}), {
+    enabled: false,
+    state: "disabled",
+    appUrl: null,
+  });
+
+  for (const BILLING_ENABLED of [undefined, "", "   "]) {
+    const production = loadStripeBillingConfig({ NODE_ENV: "production", BILLING_ENABLED });
+    assert.equal(production.enabled, false);
+    assert.equal(production.state, "misconfigured");
+    assert.match(production.missing[0], /explicitly true or false in production/);
+  }
+
+  assert.deepEqual(loadStripeBillingConfig({ NODE_ENV: "production", BILLING_ENABLED: "false" }), {
     enabled: false,
     state: "disabled",
     appUrl: null,
@@ -293,6 +307,39 @@ test("an explicitly enabled but incomplete configuration blocks job creation", a
   assert.equal(res.body.code, "billing_misconfigured");
 });
 
+test("an omitted production billing flag blocks jobs while explicit false intentionally allows them", async () => {
+  const omitted = createStripeBilling({
+    config: loadStripeBillingConfig({ NODE_ENV: "production" }),
+  });
+  const blockedResponse = createResponse();
+  let blockedNextCalled = false;
+  await omitted.requireActiveSubscription(
+    { uid: "firebase-user-1" },
+    blockedResponse,
+    () => (blockedNextCalled = true)
+  );
+  assert.equal(blockedNextCalled, false);
+  assert.equal(blockedResponse.statusCode, 503);
+  assert.equal(blockedResponse.body.code, "billing_misconfigured");
+
+  const intentionalDisable = createStripeBilling({
+    config: loadStripeBillingConfig({ NODE_ENV: "production", BILLING_ENABLED: "false" }),
+  });
+  const allowedRequest = {};
+  let allowedNextCalled = false;
+  await intentionalDisable.requireActiveSubscription(
+    allowedRequest,
+    createResponse(),
+    () => (allowedNextCalled = true)
+  );
+  assert.equal(allowedNextCalled, true);
+  assert.deepEqual(allowedRequest.billing, {
+    enabled: false,
+    active: true,
+    status: "disabled",
+  });
+});
+
 test("status is based on a live matching Stripe subscription and returns dynamic plan data", async () => {
   const auth = createAuth({
     customClaims: {
@@ -312,9 +359,9 @@ test("status is based on a live matching Stripe subscription and returns dynamic
   assert.equal(status.planName, "VOD Clipper Pro");
   assert.deepEqual(status.price, {
     id: "price_pro",
-    unitAmount: 1900,
+    unitAmount: 4900,
     currency: "usd",
-    interval: "month",
+    interval: "year",
     intervalCount: 1,
   });
   assert.equal(status.subscription.id, "sub_pro");
@@ -322,6 +369,55 @@ test("status is based on a live matching Stripe subscription and returns dynamic
   assert.equal(stripe.calls.subscriptionRetrieve.length, 1);
   assert.equal(auth.writes.at(-1).role, "editor", "unrelated Firebase claims must be preserved");
   assert.equal(auth.writes.at(-1).billing.status, "trialing");
+});
+
+test("configured price must be the active recurring $49 USD yearly plan", async () => {
+  const invalidPrices = [
+    recurringPrice({ active: false }),
+    recurringPrice({ unit_amount: 4800 }),
+    recurringPrice({ currency: "eur" }),
+    recurringPrice({ recurring: null }),
+    recurringPrice({ recurring: { interval: "month", interval_count: 1 } }),
+    recurringPrice({ recurring: { interval: "year", interval_count: 2 } }),
+  ];
+
+  for (const price of invalidPrices) {
+    const auth = createAuth();
+    const stripe = createStripe({ price });
+    const billing = createStripeBilling({ stripe, auth, config: configured() });
+
+    await assert.rejects(
+      billing.getStatusForUser("firebase-user-1"),
+      (error) => error.code === "billing_misconfigured" && error.status === 503
+    );
+    assert.equal(auth.writes.length, 0);
+  }
+});
+
+test("production accepts only the live-mode version of the configured yearly plan", async () => {
+  const config = configured({ NODE_ENV: "production" });
+  const auth = createAuth();
+  const testModeBilling = createStripeBilling({
+    stripe: createStripe({ price: recurringPrice({ livemode: false }) }),
+    auth,
+    config,
+  });
+
+  await assert.rejects(
+    testModeBilling.getStatusForUser("firebase-user-1"),
+    (error) => error.code === "billing_misconfigured" && /live-mode/.test(error.message)
+  );
+
+  const liveModeBilling = createStripeBilling({
+    stripe: createStripe({ price: recurringPrice({ livemode: true }) }),
+    auth,
+    config,
+  });
+  const status = await liveModeBilling.getStatusForUser("firebase-user-1");
+  assert.equal(status.enabled, true);
+  assert.equal(status.active, false);
+  assert.equal(status.price.unitAmount, 4900);
+  assert.equal(status.price.interval, "year");
 });
 
 test("an active subscription for a different price never grants access", async () => {

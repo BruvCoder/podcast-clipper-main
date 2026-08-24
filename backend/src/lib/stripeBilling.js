@@ -4,6 +4,12 @@ const ACTIVE_SUBSCRIPTION_STATUSES = new Set(["active", "trialing"]);
 const TERMINAL_SUBSCRIPTION_STATUSES = new Set(["canceled", "incomplete_expired"]);
 const TRUE_VALUES = new Set(["1", "true", "yes", "on"]);
 const FALSE_VALUES = new Set(["0", "false", "no", "off", ""]);
+const REQUIRED_PLAN = Object.freeze({
+  unitAmount: 4900,
+  currency: "usd",
+  interval: "year",
+  intervalCount: 1,
+});
 
 export class BillingError extends Error {
   constructor(message, { status = 500, code = "billing_error", cause } = {}) {
@@ -23,7 +29,7 @@ function parseBoolean(value, defaultValue = false) {
 }
 
 function parseRequiredBoolean(value) {
-  if (value == null) return false;
+  if (value == null || String(value).trim() === "") return undefined;
   const normalized = String(value).trim().toLowerCase();
   if (TRUE_VALUES.has(normalized)) return true;
   if (FALSE_VALUES.has(normalized)) return false;
@@ -45,17 +51,26 @@ function normalizeAppUrl(value) {
 
 /**
  * Billing is opt-in so a fresh/local checkout still works without Stripe.
- * Once explicitly enabled, every required setting must be present; an
- * incomplete production configuration fails closed instead of granting free
- * access by accident.
+ * Production requires an explicit decision: `false` intentionally disables
+ * billing, while an omitted flag is a configuration error that fails closed.
+ * Once explicitly enabled, every required setting must be present.
  */
 export function loadStripeBillingConfig(env = process.env) {
+  const production = String(env.NODE_ENV || "").trim().toLowerCase() === "production";
   const requested = parseRequiredBoolean(env.BILLING_ENABLED);
   if (requested === null) {
     return {
       enabled: false,
       state: "misconfigured",
       missing: ["BILLING_ENABLED (must be true or false)"],
+      appUrl: normalizeAppUrl(env.APP_URL || env.FRONTEND_URL),
+    };
+  }
+  if (requested === undefined && production) {
+    return {
+      enabled: false,
+      state: "misconfigured",
+      missing: ["BILLING_ENABLED (must be explicitly true or false in production)"],
       appUrl: normalizeAppUrl(env.APP_URL || env.FRONTEND_URL),
     };
   }
@@ -85,6 +100,7 @@ export function loadStripeBillingConfig(env = process.env) {
     priceId: env.STRIPE_PRICE_ID || null,
     appUrl,
     allowPromotionCodes: parseBoolean(env.STRIPE_ALLOW_PROMOTION_CODES, false),
+    requireLiveMode: production,
   };
 }
 
@@ -224,6 +240,32 @@ function planFromPrice(price) {
   };
 }
 
+function assertConfiguredPrice(price, { requireLiveMode = false } = {}) {
+  const recurring = price?.recurring;
+  const matchesRequiredPlan =
+    price?.active === true &&
+    price?.unit_amount === REQUIRED_PLAN.unitAmount &&
+    price?.currency === REQUIRED_PLAN.currency &&
+    recurring?.interval === REQUIRED_PLAN.interval &&
+    recurring?.interval_count === REQUIRED_PLAN.intervalCount;
+
+  if (!matchesRequiredPlan) {
+    throw new BillingError(
+      "STRIPE_PRICE_ID must reference the active recurring $49 USD/year price with an interval count of 1.",
+      {
+        status: 503,
+        code: "billing_misconfigured",
+      }
+    );
+  }
+  if (requireLiveMode && price.livemode !== true) {
+    throw new BillingError("STRIPE_PRICE_ID must reference a live-mode Price in production.", {
+      status: 503,
+      code: "billing_misconfigured",
+    });
+  }
+}
+
 function billingClaims(userRecord) {
   const value = userRecord?.customClaims?.billing;
   return value && typeof value === "object" ? value : {};
@@ -294,12 +336,7 @@ export function createStripeBilling({
       planPromise = stripe.prices
         .retrieve(config.priceId, { expand: ["product"] })
         .then((price) => {
-          if (!price?.active || !price?.recurring) {
-            throw new BillingError("STRIPE_PRICE_ID must reference an active recurring price.", {
-              status: 503,
-              code: "billing_misconfigured",
-            });
-          }
+          assertConfiguredPrice(price, { requireLiveMode: config.requireLiveMode });
           return planFromPrice(price);
         })
         .catch((error) => {
@@ -583,6 +620,7 @@ export function createStripeBilling({
   }
 
   async function processWebhookEvent(event) {
+    await getPlan();
     const object = event?.data?.object;
     if (!object) return { handled: false };
 

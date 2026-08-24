@@ -83,7 +83,7 @@ The service-account file is gitignored. Never commit, share, or place its conten
 
 ## 2. Configure Stripe subscriptions
 
-Billing is opt-in for local development. With `BILLING_ENABLED` unset or `false`, signed-in users can use the app without a paywall. With it set to `true`, missing or invalid Stripe configuration fails closed and new jobs require a live `active` or `trialing` subscription for the configured Price.
+Billing is opt-in for local development. With `BILLING_ENABLED` unset or `false`, signed-in users can use the app without a paywall. Production requires an explicit value: `false` intentionally disables billing, while an omitted or blank value fails closed as a configuration error. With it set to `true`, missing or invalid Stripe configuration fails closed and new jobs require a live `active` or `trialing` subscription for the configured Price. The backend verifies that Price is active, live-mode in production, and exactly $49 USD billed once per year.
 
 The selected live Stripe account (`acct_1TBHiwAun2WUinl2`) has one active subscription option:
 
