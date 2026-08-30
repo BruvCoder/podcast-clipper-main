@@ -19,6 +19,9 @@ const PHASES = [
   { match: /transcrib/i, label: "Transcribing audio", base: 45, span: 22 },
   { match: /selecting|ranking|best moments/i, label: "Finding the best moments", base: 67, span: 8 },
   { match: /rendering/i, label: "Creating your clips", base: 75, span: 24 },
+  { match: /preparing clips for youtube/i, label: "Preparing to post", base: 99, span: 0 },
+  { match: /uploading .*clip/i, label: "Posting to your clips channel", base: 99, span: 0 },
+  { match: /posted to your clips channel/i, label: "Posted to your clips channel", base: 100, span: 0 },
   { match: /^done/i, label: "Finished", base: 100, span: 0 },
   { match: /^failed/i, label: "Failed", base: 0, span: 0 },
 ];

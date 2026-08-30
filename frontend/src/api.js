@@ -64,6 +64,59 @@ export async function listJobs() {
   return data.jobs;
 }
 
+export async function getYoutubeAutomation() {
+  const res = await fetch(`${API_BASE_URL}/api/youtube/automation`, {
+    headers: await authHeaders(),
+    credentials: "include",
+  });
+  const data = await readJsonResponse(res, "Failed to load Ravi's YouTube setup");
+  return data.automation ?? data;
+}
+
+export async function startYoutubeOAuth(role) {
+  const res = await fetch(`${API_BASE_URL}/api/youtube/oauth/start`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+    credentials: "include",
+    body: JSON.stringify({ role }),
+  });
+  const data = await readJsonResponse(res, `Failed to connect your ${role} channel through Zernio`);
+  if (!data.url) throw new Error("Zernio did not return a connection URL");
+  return data.url;
+}
+
+export async function updateYoutubeAutomation(updates) {
+  const res = await fetch(`${API_BASE_URL}/api/youtube/automation`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+    credentials: "include",
+    body: JSON.stringify(updates),
+  });
+  const data = await readJsonResponse(res, "Failed to update Ravi's YouTube setup");
+  return data.automation ?? data;
+}
+
+export async function disconnectYoutube(role) {
+  const res = await fetch(`${API_BASE_URL}/api/youtube/connection/${role}`, {
+    method: "DELETE",
+    headers: await authHeaders(),
+    credentials: "include",
+  });
+  const data = await readJsonResponse(res, `Failed to disconnect your ${role} channel`);
+  return data.automation ?? data;
+}
+
+export async function checkYoutubeNow() {
+  const res = await fetch(`${API_BASE_URL}/api/youtube/check-now`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+    credentials: "include",
+    body: JSON.stringify({}),
+  });
+  const data = await readJsonResponse(res, "Ravi could not check your channel right now");
+  return data.automation ?? data;
+}
+
 export async function getBillingStatus({ forceRefresh = false } = {}) {
   const res = await fetch(`${API_BASE_URL}/api/billing/status`, {
     headers: await authHeaders(forceRefresh),

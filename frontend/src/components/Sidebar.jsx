@@ -17,7 +17,7 @@ export default function Sidebar({
   jobs,
   activeJobId,
   onSelectJob,
-  onNewClip,
+  onOverview,
   onDeleteJob,
   open,
   onClose,
@@ -56,13 +56,16 @@ export default function Sidebar({
           </div>
         </div>
 
-        <button className="new-clip-btn" onClick={onNewClip}>
-          <span className="new-clip-plus">+</span> New clip
+        <button className={`new-clip-btn ${activeJobId === null ? "active" : ""}`} onClick={onOverview}>
+          <span className="overview-icon" aria-hidden="true">
+            <i /><i /><i /><i />
+          </span>
+          Overview
         </button>
 
         <div className="sidebar-history">
-          <span className="sidebar-label">History</span>
-          {jobs.length === 0 && <p className="sidebar-empty">Your Ravi clip sets will show up here.</p>}
+          <span className="sidebar-label">Clip activity</span>
+          {jobs.length === 0 && <p className="sidebar-empty">Ravi’s completed clip sets will show up here.</p>}
           {jobs.map((j) => (
             <div
               key={j.id}

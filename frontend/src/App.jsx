@@ -1,60 +1,43 @@
 import { useEffect, useRef, useState } from "react";
-import UrlInput from "./components/UrlInput.jsx";
-import Options from "./components/Options.jsx";
 import Loading from "./components/Loading.jsx";
 import Results from "./components/Results.jsx";
 import Landing from "./components/Landing.jsx";
 import Auth from "./components/Auth.jsx";
 import Sidebar from "./components/Sidebar.jsx";
-import { isValidYouTubeUrl } from "./youtube.js";
+import AutomationDashboard from "./components/AutomationDashboard.jsx";
 import { useAuth } from "./AuthContext.jsx";
 import {
-  createJob,
+  checkYoutubeNow,
   deleteJob,
+  disconnectYoutube,
   getJob,
+  getYoutubeAutomation,
   listJobs,
+  startYoutubeOAuth,
+  updateYoutubeAutomation,
 } from "./api.js";
 
 const THEME_KEY = "pc-theme";
-const PENDING_YOUTUBE_URL_KEY = "pc-pending-youtube-url";
+const CONNECT_CHANNELS_INTENT_KEY = "ravi-connect-channels-intent";
 
-function getPendingYouTubeState() {
-  const empty = { url: "", ownerUid: "" };
-  if (typeof sessionStorage === "undefined") return empty;
+function setConnectIntent(enabled) {
+  if (typeof sessionStorage === "undefined") return;
   try {
-    const rawValue = sessionStorage.getItem(PENDING_YOUTUBE_URL_KEY);
-    if (!rawValue) return empty;
-
-    let stored;
-    try {
-      stored = JSON.parse(rawValue);
-    } catch {
-      stored = rawValue;
-    }
-
-    const url = (typeof stored === "string" ? stored : stored?.url)?.trim() || "";
-    const ownerUid = typeof stored?.ownerUid === "string" ? stored.ownerUid : "";
-    return isValidYouTubeUrl(url) ? { url, ownerUid } : empty;
+    if (enabled) sessionStorage.setItem(CONNECT_CHANNELS_INTENT_KEY, "1");
+    else sessionStorage.removeItem(CONNECT_CHANNELS_INTENT_KEY);
   } catch {
-    return empty;
+    // Browsers can disable session storage in privacy-restricted contexts.
   }
 }
 
-function getAnonymousPendingYouTubeUrl() {
-  const pending = getPendingYouTubeState();
-  return pending.ownerUid ? "" : pending.url;
-}
-
-function setPendingYouTubeUrl(value, ownerUid = "") {
-  if (typeof sessionStorage === "undefined") return;
+function consumeConnectIntent() {
+  if (typeof sessionStorage === "undefined") return false;
   try {
-    if (value) {
-      sessionStorage.setItem(PENDING_YOUTUBE_URL_KEY, JSON.stringify({ url: value, ownerUid }));
-    } else {
-      sessionStorage.removeItem(PENDING_YOUTUBE_URL_KEY);
-    }
+    const enabled = sessionStorage.getItem(CONNECT_CHANNELS_INTENT_KEY) === "1";
+    if (enabled) sessionStorage.removeItem(CONNECT_CHANNELS_INTENT_KEY);
+    return enabled;
   } catch {
-    // Session storage can be unavailable in privacy-restricted browsers.
+    return false;
   }
 }
 
@@ -68,28 +51,47 @@ function getInitialTheme() {
   return prefersLight ? "light" : "dark";
 }
 
-// signedOutView: "landing" | "auth"
-// mainStep: "url" | "options" | "loading" | "results" | "error"
+function oauthReturn() {
+  if (typeof window === "undefined") return null;
+  const params = new URLSearchParams(window.location.search);
+  const status = params.get("youtube");
+  if (!status) return null;
+  return { status, role: params.get("role") || "", message: params.get("message") || "" };
+}
+
+function clearOauthReturn() {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  url.searchParams.delete("youtube");
+  url.searchParams.delete("role");
+  url.searchParams.delete("message");
+  window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+}
+
 export default function App() {
   const { user } = useAuth();
   const authLoading = user === undefined;
 
   const [theme, setTheme] = useState(getInitialTheme);
   const [signedOutView, setSignedOutView] = useState("landing");
-  const [mainStep, setMainStep] = useState(() => (getAnonymousPendingYouTubeUrl() ? "options" : "url"));
-  const [youtubeUrl, setYoutubeUrl] = useState(getAnonymousPendingYouTubeUrl);
+  const [mainView, setMainView] = useState("overview");
   const [job, setJob] = useState(null);
   const [activeJobId, setActiveJobId] = useState(null);
   const [jobsList, setJobsList] = useState([]);
-  const [error, setError] = useState(null);
+  const [jobError, setJobError] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const pollRef = useRef(null);
 
+  const [automation, setAutomation] = useState(null);
+  const [automationLoading, setAutomationLoading] = useState(false);
+  const [automationError, setAutomationError] = useState(null);
+  const [automationNotice, setAutomationNotice] = useState(null);
+  const [automationAction, setAutomationAction] = useState(null);
+
+  const pollRef = useRef(null);
+  const connectStartedRef = useRef(false);
   const showingLanding = !authLoading && !user && signedOutView === "landing";
 
-  useEffect(() => {
-    return () => clearInterval(pollRef.current);
-  }, []);
+  useEffect(() => () => clearInterval(pollRef.current), []);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
@@ -105,48 +107,92 @@ export default function App() {
     );
   }, [showingLanding, theme]);
 
-  // Reset all app-local state on sign-out (user === null, as opposed to
-  // undefined which just means auth is still loading).
   useEffect(() => {
-    if (user === null) {
-      const pendingYouTubeState = getPendingYouTubeState();
-      const pendingYouTubeUrl = pendingYouTubeState.ownerUid ? "" : pendingYouTubeState.url;
-      if (pendingYouTubeState.ownerUid) setPendingYouTubeUrl("");
-      clearInterval(pollRef.current);
-      setSignedOutView("landing");
-      setMainStep(pendingYouTubeUrl ? "options" : "url");
-      setYoutubeUrl(pendingYouTubeUrl);
-      setJob(null);
-      setActiveJobId(null);
-      setJobsList([]);
-      setError(null);
-    }
+    if (user !== null) return;
+    clearInterval(pollRef.current);
+    connectStartedRef.current = false;
+    setSignedOutView("landing");
+    setMainView("overview");
+    setJob(null);
+    setActiveJobId(null);
+    setJobsList([]);
+    setJobError(null);
+    setAutomation(null);
+    setAutomationError(null);
+    setAutomationNotice(null);
+    setAutomationAction(null);
   }, [user]);
 
   useEffect(() => {
     if (!user) return;
-    const pendingYouTubeState = getPendingYouTubeState();
-    if (!pendingYouTubeState.url) return;
-    if (pendingYouTubeState.ownerUid && pendingYouTubeState.ownerUid !== user.uid) {
-      setPendingYouTubeUrl("");
-      setYoutubeUrl("");
-      setMainStep("url");
-      return;
+    let cancelled = false;
+
+    async function initialize() {
+      setAutomationLoading(true);
+      setAutomationError(null);
+      const returned = oauthReturn();
+      try {
+        const [automationData] = await Promise.all([
+          getYoutubeAutomation(),
+          refreshJobsList(),
+        ]);
+        if (cancelled) return;
+        setAutomation(automationData);
+
+        if (returned?.status === "connected") {
+          const roleLabel = returned.role === "main" ? "main" : returned.role === "clips" ? "clips" : "YouTube";
+          setAutomationNotice(`Your ${roleLabel} channel is securely connected through Zernio.`);
+        } else if (returned?.status === "error") {
+          setAutomationError(returned.message || "Zernio could not connect that channel. Please try again.");
+        }
+        if (returned) clearOauthReturn();
+
+        const shouldConnect = consumeConnectIntent();
+        const nextConnectionRole = !automationData?.sourceChannel
+          ? "main"
+          : !automationData?.clipsChannel
+          ? "clips"
+          : null;
+        if (shouldConnect && automationData?.available !== false && nextConnectionRole && !connectStartedRef.current) {
+          connectStartedRef.current = true;
+          setAutomationAction(`connecting-${nextConnectionRole}`);
+          const url = await startYoutubeOAuth(nextConnectionRole);
+          if (!cancelled) window.location.assign(url);
+        }
+      } catch (error) {
+        if (!cancelled) setAutomationError(error.message);
+      } finally {
+        if (!cancelled) {
+          setAutomationLoading(false);
+          setAutomationAction(null);
+        }
+      }
     }
-    setPendingYouTubeUrl(pendingYouTubeState.url, user.uid);
-    setYoutubeUrl(pendingYouTubeState.url);
-    setMainStep("options");
+
+    initialize();
+    return () => { cancelled = true; };
   }, [user]);
 
   useEffect(() => {
-    if (user) refreshJobsList();
-  }, [user]);
+    if (!user || !automation?.enabled) return undefined;
+    const timer = setInterval(async () => {
+      try {
+        const data = await getYoutubeAutomation();
+        setAutomation(data);
+        refreshJobsList();
+      } catch {
+        // Keep the last good status. Explicit actions still surface failures.
+      }
+    }, 30000);
+    return () => clearInterval(timer);
+  }, [user, automation?.enabled]);
 
   async function refreshJobsList() {
     try {
-      setJobsList(await listJobs());
+      const jobs = await listJobs();
+      setJobsList(jobs || []);
     } catch {
-      // Non-fatal — history just won't show for now.
+      // Job history is secondary to channel automation. Keep the overview usable.
     }
   }
 
@@ -158,110 +204,130 @@ export default function App() {
         setJob(data);
         if (data.status === "done") {
           clearInterval(pollRef.current);
-          setMainStep("results");
+          setMainView("results");
           refreshJobsList();
         } else if (data.status === "error") {
           clearInterval(pollRef.current);
-          setError(data.error);
-          setMainStep("error");
+          setJobError(data.error);
+          setMainView("error");
           refreshJobsList();
         }
-      } catch (e) {
+      } catch (error) {
         clearInterval(pollRef.current);
-        setError(e.message);
-        setMainStep("error");
+        setJobError(error.message);
+        setMainView("error");
       }
     }, 2000);
   }
 
-  async function handleDeleteJob(id) {
-    await deleteJob(id);
-    setJobsList((prev) => prev.filter((j) => j.id !== id));
-    // Deleting whatever is on screen would leave it showing clips whose
-    // files no longer exist, so send the user back to a clean state.
-    if (id === activeJobId) handleNewClip();
-  }
-
-  function handleNewClip() {
+  function handleOverview() {
     clearInterval(pollRef.current);
-    setPendingYouTubeUrl("");
     setActiveJobId(null);
     setJob(null);
-    setYoutubeUrl("");
-    setError(null);
-    setMainStep("url");
+    setJobError(null);
+    setMainView("overview");
     setSidebarOpen(false);
   }
 
-  function handleUrlNext(url) {
-    const normalizedUrl = url.trim();
-    if (!user) setPendingYouTubeUrl(normalizedUrl);
-    else setPendingYouTubeUrl("");
-    setYoutubeUrl(normalizedUrl);
-    setMainStep("options");
-  }
-
-  function handleLandingStart(url) {
-    handleUrlNext(url);
-    setSignedOutView("auth");
-  }
-
-  function handleLandingUrlEdit(value) {
-    if (value.trim() === youtubeUrl) return;
-    setPendingYouTubeUrl("");
-    setYoutubeUrl("");
-    setMainStep("url");
-  }
-
-  function handleLandingSignIn() {
-    setPendingYouTubeUrl("");
-    setYoutubeUrl("");
-    setMainStep("url");
-    setSignedOutView("auth");
-  }
-
-  function handleOptionsBack() {
-    setPendingYouTubeUrl("");
-    setYoutubeUrl("");
-    setMainStep("url");
-  }
-
-  async function handleSubmitOptions(options) {
-    setPendingYouTubeUrl("");
-    setError(null);
-    setMainStep("loading");
-    try {
-      const jobId = await createJob({ youtubeUrl, ...options });
-      setActiveJobId(jobId);
-      refreshJobsList();
-      pollJob(jobId);
-    } catch (e) {
-      setError(e.message);
-      setMainStep("url");
-    }
+  async function handleDeleteJob(id) {
+    await deleteJob(id);
+    setJobsList((previous) => previous.filter((item) => item.id !== id));
+    if (id === activeJobId) handleOverview();
   }
 
   async function handleSelectHistoryJob(id) {
-    setPendingYouTubeUrl("");
     setSidebarOpen(false);
     setActiveJobId(id);
-    setError(null);
+    setJobError(null);
     clearInterval(pollRef.current);
-    setMainStep("loading");
+    setMainView("loading");
     try {
       const data = await getJob(id);
       setJob(data);
-      if (data.status === "done") {
-        setMainStep("results");
-      } else if (data.status === "error") {
-        setError(data.error);
-        setMainStep("error");
-      } else {
-        pollJob(id);
-      }
-    } catch (e) {
-      setError(e.message);
-      setMainStep("error");
+      if (data.status === "done") setMainView("results");
+      else if (data.status === "error") {
+        setJobError(data.error);
+        setMainView("error");
+      } else pollJob(id);
+    } catch (error) {
+      setJobError(error.message);
+      setMainView("error");
+    }
+  }
+
+  function handleLandingConnect() {
+    setConnectIntent(true);
+    setSignedOutView("auth");
+  }
+
+  function handleLandingSignIn() {
+    setConnectIntent(false);
+    setSignedOutView("auth");
+  }
+
+  async function handleConnectYoutube(role) {
+    setAutomationAction(`connecting-${role}`);
+    setAutomationError(null);
+    setAutomationNotice(null);
+    try {
+      const url = await startYoutubeOAuth(role);
+      window.location.assign(url);
+    } catch (error) {
+      setAutomationError(error.message);
+      setAutomationAction(null);
+    }
+  }
+
+  async function handleUpdateAutomation(updates) {
+    const wasEnabled = Boolean(automation?.enabled);
+    setAutomationAction("saving");
+    setAutomationError(null);
+    setAutomationNotice(null);
+    try {
+      const data = await updateYoutubeAutomation(updates);
+      setAutomation(data);
+      setAutomationNotice(
+        updates.enabled
+          ? "Ravi is now watching for your next public upload."
+          : wasEnabled
+          ? "Ravi is paused. No new uploads will be processed."
+          : "Your Ravi setup has been saved.",
+      );
+    } catch (error) {
+      setAutomationError(error.message);
+    } finally {
+      setAutomationAction(null);
+    }
+  }
+
+  async function handleCheckNow() {
+    setAutomationAction("checking");
+    setAutomationError(null);
+    setAutomationNotice(null);
+    try {
+      const data = await checkYoutubeNow();
+      setAutomation(data);
+      setAutomationNotice("Ravi checked your main channel for new uploads.");
+      refreshJobsList();
+    } catch (error) {
+      setAutomationError(error.message);
+    } finally {
+      setAutomationAction(null);
+    }
+  }
+
+  async function handleDisconnectYoutube(role) {
+    setAutomationAction(`disconnecting-${role}`);
+    setAutomationError(null);
+    setAutomationNotice(null);
+    try {
+      const data = await disconnectYoutube(role);
+      setAutomation(data);
+      setAutomationNotice(`Your ${role} channel was disconnected and Ravi was paused.`);
+    } catch (error) {
+      setAutomationError(error.message);
+    } finally {
+      setAutomationAction(null);
     }
   }
 
@@ -273,7 +339,7 @@ export default function App() {
       {!showingLanding && (
         <button
           className="theme-toggle"
-          onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+          onClick={() => setTheme((value) => (value === "dark" ? "light" : "dark"))}
           aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
           title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
         >
@@ -281,21 +347,12 @@ export default function App() {
         </button>
       )}
 
-      {authLoading && (
-        <div className="centered-shell">
-          <span className="stage-text">Loading...</span>
-        </div>
-      )}
+      {authLoading && <div className="centered-shell"><span className="stage-text">Loading…</span></div>}
 
       {!authLoading && !user && (
         <div className={`centered-shell ${signedOutView === "landing" ? "landing-shell" : ""}`}>
           {signedOutView === "landing" ? (
-            <Landing
-              initialUrl={youtubeUrl}
-              onSignIn={handleLandingSignIn}
-              onStart={handleLandingStart}
-              onUrlEdit={handleLandingUrlEdit}
-            />
+            <Landing onConnect={handleLandingConnect} onSignIn={handleLandingSignIn} />
           ) : (
             <Auth onBack={() => setSignedOutView("landing")} />
           )}
@@ -308,7 +365,7 @@ export default function App() {
             jobs={jobsList}
             activeJobId={activeJobId}
             onSelectJob={handleSelectHistoryJob}
-            onNewClip={handleNewClip}
+            onOverview={handleOverview}
             onDeleteJob={handleDeleteJob}
             open={sidebarOpen}
             onClose={() => setSidebarOpen(false)}
@@ -316,34 +373,30 @@ export default function App() {
 
           <main className="main-content">
             <div className="main-topbar">
-              <button className="menu-toggle" onClick={() => setSidebarOpen(true)} aria-label="Open menu">
-                ☰
-              </button>
+              <button className="menu-toggle" onClick={() => setSidebarOpen(true)} aria-label="Open menu">☰</button>
             </div>
 
-            <div className="main-inner">
-              {mainStep === "url" && (
-                <div style={{ width: "100%", maxWidth: 480 }}>
-                  <UrlInput onNext={handleUrlNext} />
-                  {error && (
-                    <div className="error-box" style={{ maxWidth: 480, marginTop: 16 }}>
-                      {error}
-                    </div>
-                  )}
-                </div>
+            <div className={`main-inner ${mainView === "overview" ? "overview" : ""}`}>
+              {mainView === "overview" && (
+                <AutomationDashboard
+                  automation={automation}
+                  loading={automationLoading}
+                  error={automationError}
+                  notice={automationNotice}
+                  action={automationAction}
+                  onConnect={handleConnectYoutube}
+                  onUpdate={handleUpdateAutomation}
+                  onCheckNow={handleCheckNow}
+                  onDisconnect={handleDisconnectYoutube}
+                />
               )}
-              {mainStep === "options" && (
-                <Options onBack={handleOptionsBack} onSubmit={handleSubmitOptions} />
-              )}
-              {mainStep === "loading" && <Loading stage={job?.stage} />}
-              {mainStep === "results" && job && <Results job={job} onRestart={handleNewClip} />}
-              {mainStep === "error" && (
+              {mainView === "loading" && <Loading stage={job?.stage} />}
+              {mainView === "results" && job && <Results job={job} onRestart={handleOverview} />}
+              {mainView === "error" && (
                 <div className="card error-view">
-                  <h1>Something went wrong</h1>
-                  <div className="error-box">{error}</div>
-                  <button className="btn-primary" onClick={handleNewClip}>
-                    Start a new clip
-                  </button>
+                  <h1>This clip set needs attention</h1>
+                  <div className="error-box">{jobError}</div>
+                  <button className="btn-primary" onClick={handleOverview}>Back to overview</button>
                 </div>
               )}
             </div>
@@ -358,12 +411,7 @@ function SunIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
       <circle cx="8" cy="8" r="3.2" stroke="currentColor" strokeWidth="1.3" />
-      <path
-        d="M8 1v1.6M8 13.4V15M15 8h-1.6M2.6 8H1M12.9 3.1l-1.15 1.15M4.25 11.75L3.1 12.9M12.9 12.9l-1.15-1.15M4.25 4.25L3.1 3.1"
-        stroke="currentColor"
-        strokeWidth="1.3"
-        strokeLinecap="round"
-      />
+      <path d="M8 1v1.6M8 13.4V15M15 8h-1.6M2.6 8H1M12.9 3.1l-1.15 1.15M4.25 11.75L3.1 12.9M12.9 12.9l-1.15-1.15M4.25 4.25L3.1 3.1" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
     </svg>
   );
 }
@@ -371,12 +419,7 @@ function SunIcon() {
 function MoonIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <path
-        d="M14 9.3A6.2 6.2 0 1 1 6.7 2a5 5 0 0 0 7.3 7.3z"
-        stroke="currentColor"
-        strokeWidth="1.3"
-        strokeLinejoin="round"
-      />
+      <path d="M14 9.3A6.2 6.2 0 1 1 6.7 2a5 5 0 0 0 7.3 7.3z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
     </svg>
   );
 }

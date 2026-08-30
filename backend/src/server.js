@@ -23,11 +23,20 @@ import {
   recoverJobFromDiskSync,
 } from "./lib/jobLifecycle.js";
 import { inspectRuntimeReadiness } from "./lib/runtimeReadiness.js";
+import { FileYoutubeAutomationStore } from "./lib/youtubeAutomationStore.js";
+import {
+  createYoutubeAutomationService,
+  loadYoutubeAutomationConfig,
+} from "./lib/youtubeAutomationService.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const JOBS_DIR = path.join(__dirname, "..", "jobs");
 ensureDir(JOBS_DIR);
 removeEphemeralMediaWorkspacesSync(os.tmpdir());
+const youtubeAutomationConfig = loadYoutubeAutomationConfig(process.env, {
+  stateDir: path.join(JOBS_DIR, "_ravi_automation"),
+});
+const youtubeAutomationStore = new FileYoutubeAutomationStore(youtubeAutomationConfig.stateDir);
 const downloaderProxyEnabled = ytDlpProxyEnabled();
 const runtimeReadiness = inspectRuntimeReadiness();
 const JOB_PROCESS_CONCURRENCY = positiveInteger(process.env.JOB_PROCESS_CONCURRENCY, 1);
@@ -47,6 +56,12 @@ const billing = createStripeBilling({
   getAuth: getFirebaseAuth,
   config: billingConfig,
 });
+const youtubeAutomation = createYoutubeAutomationService({
+  config: youtubeAutomationConfig,
+  store: youtubeAutomationStore,
+  enqueueJob: enqueueClipJob,
+  onPublicationUpdate: syncAutomationJobPublication,
+});
 
 // Node terminates the whole process on an unhandled promise rejection by
 // default — meaning one bad rejection anywhere would take down every other
@@ -57,7 +72,18 @@ process.on("unhandledRejection", (err) => {
 });
 
 const app = express();
-app.use(cors());
+const allowedOrigins = new Set([
+  youtubeAutomationConfig.appUrl,
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+].filter(Boolean));
+app.use(cors({
+  credentials: true,
+  origin(origin, callback) {
+    if (!origin || !allowedOrigins.size || allowedOrigins.has(origin)) return callback(null, true);
+    return callback(new Error("Origin is not allowed."));
+  },
+}));
 
 // Stripe verifies the signature against the exact bytes it sent. Mount this
 // before express.json(), which would otherwise mutate the request body.
@@ -66,6 +92,7 @@ app.post(
   express.raw({ type: "application/json", limit: "1mb" }),
   billing.handleWebhook
 );
+
 app.use(express.json());
 
 // Only rendered clips are shareable by URL. Never expose source videos,
@@ -98,6 +125,8 @@ app.get("/api/health", (req, res) => {
     commit: (process.env.RAILWAY_GIT_COMMIT_SHA || "unknown").slice(0, 7),
     branch: process.env.RAILWAY_GIT_BRANCH || "unknown",
     billing: billing.config.state,
+    youtubeAutomation: youtubeAutomationConfig.configured ? "configured" : "setup_required",
+    channelConnection: "zernio",
     downloader: runtimeReadiness.ytDlp.ok ? "yt-dlp" : "unavailable",
     downloaderVersion: runtimeReadiness.ytDlp.version,
     ffmpeg: runtimeReadiness.ffmpeg.ok ? "configured" : "unavailable",
@@ -117,6 +146,94 @@ app.get("/api/health", (req, res) => {
 app.get("/api/billing/status", requireAuth, billing.handleStatus);
 app.post("/api/billing/checkout", requireAuth, billing.handleCheckout);
 app.post("/api/billing/portal", requireAuth, billing.handlePortal);
+
+const YOUTUBE_OAUTH_COOKIE = "ravi_youtube_oauth";
+
+function readCookie(req, name) {
+  for (const part of String(req.headers.cookie || "").split(";")) {
+    const separator = part.indexOf("=");
+    if (separator === -1) continue;
+    if (part.slice(0, separator).trim() !== name) continue;
+    try {
+      return decodeURIComponent(part.slice(separator + 1).trim());
+    } catch {
+      return "";
+    }
+  }
+  return "";
+}
+
+function youtubeOauthCookie(value, { clear = false } = {}) {
+  const parts = [
+    `${YOUTUBE_OAUTH_COOKIE}=${clear ? "" : encodeURIComponent(value)}`,
+    "HttpOnly",
+    "SameSite=Lax",
+    "Path=/api/youtube/oauth",
+    clear ? "Max-Age=0" : `Max-Age=${Math.round(youtubeAutomationConfig.oauthStateTtlMs / 1000)}`,
+  ];
+  if (youtubeAutomationConfig.cookieSecure) parts.push("Secure");
+  return parts.join("; ");
+}
+
+app.get("/api/youtube/automation", requireAuth, async (req, res, next) => {
+  try {
+    res.json(await youtubeAutomation.status(req.uid));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/youtube/oauth/start", requireAuth, async (req, res, next) => {
+  try {
+    const { url, state } = await youtubeAutomation.startOauth(req.uid, req.body?.role);
+    res.setHeader("Set-Cookie", youtubeOauthCookie(state));
+    res.json({ url });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/youtube/oauth/callback", async (req, res) => {
+  res.setHeader("Set-Cookie", youtubeOauthCookie("", { clear: true }));
+  try {
+    const completed = await youtubeAutomation.completeOauth({
+      state: req.query.state,
+      cookieState: readCookie(req, YOUTUBE_OAUTH_COOKIE),
+      connected: req.query.connected,
+      profileId: req.query.profileId,
+      accountId: req.query.accountId,
+      oauthError: req.query.error,
+    });
+    res.redirect(303, youtubeAutomation.oauthSuccessRedirect(completed.role));
+  } catch (error) {
+    console.warn("YouTube OAuth callback failed:", error?.code || error?.message);
+    res.redirect(303, youtubeAutomation.oauthErrorRedirect(error));
+  }
+});
+
+app.patch("/api/youtube/automation", requireAuth, async (req, res, next) => {
+  try {
+    res.json(await youtubeAutomation.update(req.uid, req.body || {}));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/youtube/check-now", requireAuth, async (req, res, next) => {
+  try {
+    res.json(await youtubeAutomation.pollUser(req.uid, { force: true }));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/youtube/connection/:role", requireAuth, async (req, res, next) => {
+  try {
+    res.json(await youtubeAutomation.disconnect(req.uid, req.params.role));
+  } catch (error) {
+    next(error);
+  }
+});
 
 // Jobs live in memory for fast access, backed by a job.json file per job dir
 // so history survives backend restarts and is available to a user from any
@@ -169,36 +286,83 @@ function updateJob(id, patch) {
   persistJob(job);
 }
 
+async function syncAutomationJobPublication({
+  jobId,
+  publications = [],
+  status,
+  error = null,
+}) {
+  if (!jobId || !jobs.has(jobId)) return;
+  const job = jobs.get(jobId);
+  const byIndex = new Map(
+    publications
+      .filter((item) => Number.isSafeInteger(Number(item?.clipIndex)))
+      .map((item) => [Number(item.clipIndex), item])
+  );
+  const complete = status === "done";
+  const failed = ["posting_error", "failed", "reconcile_required"].includes(status);
+  updateJob(jobId, {
+    status: "done",
+    stage: complete
+      ? "Posted to your clips channel"
+      : failed
+        ? "Clips ready; posting needs attention"
+        : "Sent to Zernio; YouTube is publishing",
+    uploadStatus: complete ? "published" : failed ? "error" : "submitted",
+    uploadError: error || null,
+    publishedAt: complete ? Date.now() : job.publishedAt || null,
+    clips: (job.clips || []).map((clip) => ({
+      ...clip,
+      ...(byIndex.get(Number(clip.index)) || {}),
+    })),
+  });
+}
+
 loadJobsFromDisk();
 
-app.post("/api/jobs", requireAuth, billing.requireActiveSubscription, (req, res) => {
+function jobRequestError(message, status, code) {
+  const error = new Error(message);
+  error.status = status;
+  error.code = code;
+  return error;
+}
+
+function enqueueClipJob({
+  uid,
+  youtubeUrl,
+  settings = {},
+  trigger = "manual",
+  sourceVideoId = null,
+  sourceTitle = null,
+  sourcePublishedAt = null,
+}) {
   if (shuttingDown) {
-    return res
-      .status(503)
-      .set("Retry-After", "30")
-      .json({ error: "The server is restarting. Please try again shortly." });
+    throw jobRequestError("The server is restarting. Please try again shortly.", 503, "server_restarting");
   }
-  const { youtubeUrl, numClips, clipLengthSec, subtitleColor, cropMode } = req.body || {};
+  if (typeof uid !== "string" || !uid) {
+    throw jobRequestError("This automated job is missing its account owner.", 500, "missing_job_owner");
+  }
 
   let canonicalYoutubeUrl;
   try {
     canonicalYoutubeUrl = normalizeYouTubeUrl(youtubeUrl);
   } catch (error) {
-    return res.status(400).json({ error: error.message });
+    throw jobRequestError(error.message, 400, "invalid_youtube_url");
   }
-  const capacity = inspectJobCapacity(jobExecutions, jobs, req.uid, {
+  const capacity = inspectJobCapacity(jobExecutions, jobs, uid, {
     maxTotal: MAX_OUTSTANDING_JOBS,
     maxPerUser: MAX_OUTSTANDING_JOBS_PER_USER,
   });
   if (!capacity.available) {
-    return res
-      .status(429)
-      .set("Retry-After", "120")
-      .json({ error: "Too many jobs are already queued or running. Please try again later." });
+    throw jobRequestError(
+      "Too many jobs are already queued or running. Ravi will try this upload again shortly.",
+      429,
+      "job_capacity_reached"
+    );
   }
 
-  const parsedNumClips = Number(numClips);
-  const parsedClipLength = Number(clipLengthSec);
+  const parsedNumClips = Number(settings.numClips);
+  const parsedClipLength = Number(settings.clipLengthSec);
   const n = Math.max(
     1,
     Math.min(10, Number.isFinite(parsedNumClips) ? Math.trunc(parsedNumClips) : 5)
@@ -207,25 +371,31 @@ app.post("/api/jobs", requireAuth, billing.requireActiveSubscription, (req, res)
     15,
     Math.min(90, Number.isFinite(parsedClipLength) ? Math.trunc(parsedClipLength) : 45)
   );
-  const color = /^#[0-9A-Fa-f]{6}$/.test(subtitleColor || "") ? subtitleColor : "#FFFFFF";
-  const crop = cropMode === "crop" ? "crop" : "pad";
+  const color = /^#[0-9A-Fa-f]{6}$/.test(settings.subtitleColor || "")
+    ? settings.subtitleColor
+    : "#FFFFFF";
+  const crop = settings.cropMode === "crop" ? "crop" : "pad";
 
   const id = randomUUID();
   const jobDir = ensureDir(path.join(JOBS_DIR, id));
 
   const job = {
     id,
-    uid: req.uid,
+    uid,
     status: "queued",
     stage: "Queued",
     error: null,
     clips: [],
     createdAt: Date.now(),
+    trigger,
+    sourceVideoId,
+    sourceTitle: sourceTitle || null,
+    sourceTitleHint: sourceTitle || null,
+    sourcePublishedAt,
+    uploadStatus: trigger === "channel" ? "waiting" : null,
   };
   jobs.set(id, job);
   persistJob(job);
-
-  res.json({ jobId: id });
 
   // Fire and forget; client polls GET /api/jobs/:id for progress. Keep the
   // controller and settled promise so DELETE can cancel and join this work.
@@ -240,18 +410,38 @@ app.post("/api/jobs", requireAuth, billing.requireActiveSubscription, (req, res)
       clipLengthSec: len,
       subtitleColor: color,
       cropMode: crop,
+      trigger,
+      sourceVideoId,
     },
     controller.signal
   )
-    .catch((err) => {
-      if (deletingJobIds.has(id) && isAbortError(err)) return;
+    .catch(async (err) => {
+      if (deletingJobIds.has(id) && isAbortError(err)) {
+        if (trigger === "channel") {
+          await youtubeAutomation.markJobCancelled(job).catch(() => {});
+        }
+        return;
+      }
       console.error(`Job ${id} failed:`, err);
       updateJob(id, { status: "error", stage: "Failed", error: err.message || String(err) });
+      if (trigger === "channel") {
+        await youtubeAutomation.markJobFailed(job, err).catch((automationError) => {
+          console.error(`Failed to persist automation error for job ${id}:`, automationError);
+        });
+      }
     })
     .finally(() => {
       if (jobExecutions.get(id) === execution) jobExecutions.delete(id);
     });
   jobExecutions.set(id, execution);
+  return id;
+}
+
+app.post("/api/jobs", requireAuth, (req, res) => {
+  res.status(410).json({
+    error: "Ravi no longer accepts individual video links. Connect the main channel to watch and the clips channel where Ravi should post.",
+    code: "channel_automation_only",
+  });
 });
 
 app.get("/api/jobs", requireAuth, (req, res) => {
@@ -265,6 +455,9 @@ app.get("/api/jobs", requireAuth, (req, res) => {
       sourceTitle: j.sourceTitle || null,
       createdAt: j.createdAt,
       clipCount: (j.clips || []).length,
+      trigger: j.trigger || "manual",
+      uploadStatus: j.uploadStatus || null,
+      uploadedClipCount: (j.clips || []).filter((clip) => clip.youtubeUrl).length,
     }));
   res.json({ jobs: list });
 });
@@ -314,7 +507,7 @@ app.delete("/api/jobs/:id", requireAuth, async (req, res, next) => {
 async function runPipeline(
   id,
   jobDir,
-  { youtubeUrl, numClips, clipLengthSec, subtitleColor, cropMode },
+  { youtubeUrl, numClips, clipLengthSec, subtitleColor, cropMode, trigger, sourceVideoId },
   signal
 ) {
   let releaseJobSlot = null;
@@ -418,12 +611,55 @@ async function runPipeline(
     }, signal);
 
     signal.throwIfAborted();
+    const completedClips = clipsOut.sort((a, b) => b.viralityScore - a.viralityScore);
     updateJob(id, {
-      status: "done",
-      stage: "Done",
+      status: trigger === "channel" ? "running" : "done",
+      stage: trigger === "channel" ? "Preparing clips for YouTube" : "Done",
       sourceTitle: info.title,
-      clips: clipsOut.sort((a, b) => b.viralityScore - a.viralityScore),
+      clips: completedClips,
+      uploadStatus: trigger === "channel" ? "uploading" : null,
     });
+
+    if (trigger === "channel" && sourceVideoId) {
+      signal.throwIfAborted();
+      const currentJob = jobs.get(id);
+      if (!currentJob) throw new DOMException("Job deleted.", "AbortError");
+      try {
+        const publication = await youtubeAutomation.publishJob({
+          uid: currentJob.uid,
+          job: { ...currentJob, sourceTitle: info.title, clips: completedClips },
+          jobDir,
+          onProgress(stage) {
+            updateJob(id, { stage, uploadStatus: "uploading" });
+          },
+          signal,
+        });
+        const publicationsByIndex = new Map(
+          publication.published.map((item) => [item.clipIndex, item])
+        );
+        updateJob(id, {
+          status: "done",
+          stage: publication.complete
+            ? "Posted to your clips channel"
+            : "Sent to Zernio; YouTube is publishing",
+          uploadStatus: publication.complete ? "published" : "submitted",
+          publishedAt: publication.complete ? Date.now() : null,
+          publishPrivacyStatus: publication.privacyStatus,
+          clips: completedClips.map((clip) => ({
+            ...clip,
+            ...(publicationsByIndex.get(clip.index) || {}),
+          })),
+        });
+      } catch (error) {
+        if (isAbortError(error)) throw error;
+        updateJob(id, {
+          status: "done",
+          stage: "Clips ready; posting needs attention",
+          uploadStatus: error?.code === "upload_reconcile_required" ? "reconcile_required" : "error",
+          uploadError: error.message || "YouTube could not post every clip.",
+        });
+      }
+    }
   } finally {
     // Job history serves only rendered clips. Remove the complete ephemeral
     // source workspace after success, failure, cancellation, or timeout.
@@ -465,7 +701,7 @@ function positiveInteger(value, fallback) {
 }
 
 function isAbortError(error) {
-  return error?.name === "AbortError";
+  return error?.name === "AbortError" || error?.code === "zernio_request_aborted";
 }
 
 const PORT = process.env.PORT || 8787;
@@ -476,11 +712,15 @@ const PORT = process.env.PORT || 8787;
 app.use((err, req, res, next) => {
   console.error("Unhandled error:", err);
   if (res.headersSent) return next(err);
-  res.status(500).json({ error: err.message || "Internal server error." });
+  res.status(Number.isInteger(err.status) ? err.status : 500).json({
+    error: err.message || "Internal server error.",
+    code: err.code || null,
+  });
 });
 
 const server = app.listen(PORT, () => {
   console.log(`Ravi backend listening on http://localhost:${PORT}`);
+  youtubeAutomation.start();
   if (!runtimeReadiness.ok) {
     console.error("Downloader runtime is not ready; /api/health will return HTTP 503.");
   }
@@ -491,6 +731,7 @@ async function shutdown(signalName) {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log(`${signalName} received; cancelling active media jobs before shutdown.`);
+  youtubeAutomation.stop();
   server.close();
 
   const forceExit = setTimeout(() => {

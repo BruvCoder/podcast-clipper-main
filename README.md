@@ -1,27 +1,32 @@
 # Ravi
 
-Ravi is a personal clipping agent that turns a public YouTube video into ranked, subtitled vertical clips. Users sign in with Firebase Authentication, choose clip settings, and receive MP4 clips rendered locally by the backend. The optional Stripe integration remains available in the codebase but pricing and subscription checks are currently disabled in the product experience.
+Ravi is a personal YouTube clipping agent. A creator connects a **main channel** and a separate **clips channel** through [Zernio](https://zernio.com/). Ravi watches the main channel for new uploads, downloads each new source with `yt-dlp`, creates vertical captioned clips, and publishes them to the clips channel through Zernio.
 
-> This repository is currently designed for local development. Read [Security and deployment limitations](#security-and-deployment-limitations) before exposing it to the internet.
+Ravi does **not** accept individual video links. `POST /api/jobs` is intentionally disabled; connected-channel automation is the only way new clipping jobs are created.
 
-## How it works
+## Product flow
 
-1. The frontend signs users in with Google or email/password through Firebase Authentication.
-2. Authenticated API requests include a Firebase ID token. The backend verifies the token with Firebase Admin and keeps each user's jobs separate.
-3. The backend runs `yt-dlp` directly to validate the YouTube URL and download a merged, resolution-bounded source into an ephemeral per-job directory. An optional residential HTTP(S) proxy carries all yt-dlp YouTube traffic.
-4. Whisper large-v3 (hosted on Groq) transcribes the audio stream from that local source, producing word-level timestamps derived from acoustic alignment against the audio.
-5. A text model on Groq receives the timestamped transcript and selects, titles, and ranks the best moments.
-6. For each selected moment, FFmpeg seeks into the local source, reframes it to 9:16, and burns in timed subtitles. The temporary source is removed after rendering; the browser polls the job and displays the resulting clips.
+1. The creator signs in to Ravi with Firebase Authentication.
+2. Ravi creates two deterministic, role-specific Zernio profiles for that Firebase user: one for the **main channel** and one for the **clips channel**. The profile names are derived from a hash of the Firebase UID plus the role, so repeat setup is idempotent without exposing the UID.
+3. The creator uses Zernio's hosted YouTube connection flow once through each role profile. Each profile contains one YouTube account, and the underlying main and clips channels must be different to prevent a posting loop.
+4. The creator chooses clip count, clip length, framing, captions, upload privacy, and audience settings, then certifies that they control the source content and accept responsibility for YouTube Community Guidelines compliance.
+5. When watching is turned on, Ravi reads the main channel's current published posts as a baseline. Existing videos are not backfilled; only uploads published at or after activation are eligible.
+6. A periodic Zernio live sync merges uploads published directly on YouTube with posts published through Zernio. Persistent per-video event records deduplicate overlapping results and recover pending work after a restart.
+7. For each new upload, the backend uses `yt-dlp` to retrieve a bounded source, Groq Whisper to transcribe it, a Groq text model to select the strongest moments, and FFmpeg to create vertical captioned MP4s.
+8. Ravi obtains a Zernio media-upload URL, uploads each rendered MP4, and creates a YouTube post targeted at the connected clips account. It then reconciles Zernio's post status until the published YouTube URL is available.
+
+The creator can pause watching, trigger a check immediately, change settings for future uploads, or disconnect either channel from the dashboard.
 
 ## Requirements
 
 - **Node.js 22.12 or newer** and npm. Vite 8 requires a current Node release.
-- **FFmpeg and ffprobe** available on `PATH`.
-- **yt-dlp** available on `PATH`. Production uses the checksum-pinned official binary in `backend/Dockerfile`.
-- A **Groq API key** from [Groq Console](https://console.groq.com/keys). One key covers both transcription (Whisper) and clip selection.
+- **FFmpeg and ffprobe** on `PATH`.
+- **yt-dlp** on `PATH`. Production uses the checksum-pinned official binary in `backend/Dockerfile`.
+- A **Groq API key** for Whisper transcription and clip selection.
 - A **Firebase project** with a Web app, Firebase Authentication, and a Firebase Admin service account.
-- A **Stripe account**, recurring Price, and webhook endpoint when subscription billing is enabled.
-- An HTTP or HTTPS **residential proxy** whose provider permits the intended media traffic. It is optional locally and required by the production readiness check by default.
+- A **Zernio API key** with enough connected-account capacity for the users Ravi will serve.
+- A public HTTPS backend URL in production for the Zernio connection return URL.
+- An HTTP(S) residential proxy whose provider permits the intended traffic. It is optional locally and required by the production readiness check by default.
 
 Confirm the local tools before installing dependencies:
 
@@ -32,27 +37,28 @@ ffmpeg -version
 ffprobe -version
 ```
 
-## 1. Configure Firebase
+## Local setup
 
-### Enable sign-in methods
+### 1. Install dependencies
+
+```bash
+cd backend
+npm ci
+cp .env.example .env
+
+cd ../frontend
+npm ci
+cp .env.example .env
+```
+
+### 2. Configure Firebase
 
 In the [Firebase console](https://console.firebase.google.com/):
 
 1. Create or select a project and add a Web app.
-2. Open **Authentication > Sign-in method**.
-3. Enable **Google** and **Email/Password**.
-4. Under **Authentication > Settings > Authorized domains**, make sure `localhost` is allowed for local development.
-
-### Configure the frontend
-
-Copy the frontend template:
-
-```bash
-cd frontend
-cp .env.example .env
-```
-
-Open Firebase **Project settings > General > Your apps > SDK setup and configuration**, then copy the Web app configuration into `frontend/.env`:
+2. Open **Authentication > Sign-in method** and enable **Google** and **Email/Password**.
+3. Under **Authentication > Settings > Authorized domains**, make sure `localhost` is allowed.
+4. Copy the Web app configuration from **Project settings > General** into `frontend/.env`:
 
 ```dotenv
 VITE_FIREBASE_API_KEY=your_firebase_web_api_key
@@ -63,213 +69,227 @@ VITE_FIREBASE_MESSAGING_SENDER_ID=your_messaging_sender_id
 VITE_FIREBASE_APP_ID=your_firebase_app_id
 ```
 
-Firebase Web configuration is included in the browser bundle and is not an Admin secret. Access control still depends on correctly configured Firebase Authentication and backend token verification.
-
-### Configure Firebase Admin
-
-The backend needs private credentials to verify Firebase ID tokens. For local development:
-
-1. Open Firebase **Project settings > Service accounts**.
-2. Choose **Generate new private key**.
-3. Save the downloaded file as `backend/firebase-service-account.json`.
-4. Set this in `backend/.env`:
+For Firebase Admin, open **Project settings > Service accounts**, generate a private key, save it as `backend/firebase-service-account.json`, and set:
 
 ```dotenv
 FIREBASE_SERVICE_ACCOUNT_PATH=./firebase-service-account.json
 ```
 
-The service-account file is gitignored. Never commit, share, or place its contents in frontend variables. For a deployment platform that stores secrets as environment variables, leave the path unset and set `FIREBASE_SERVICE_ACCOUNT_JSON` to the complete service-account JSON through that platform's secret manager instead.
+The service-account file is gitignored. Never commit it or expose Admin credentials in a `VITE_...` variable. On a host that stores secrets as environment variables, leave the path unset and provide the complete JSON through `FIREBASE_SERVICE_ACCOUNT_JSON` instead.
 
-## 2. Optional dormant Stripe subscriptions
+### 3. Configure Zernio channel connections
 
-Pricing is currently removed from the Ravi interface, and deployed environments should keep `BILLING_ENABLED=false`. The backend integration is retained for a future reactivation. With billing enabled, missing or invalid Stripe configuration fails closed and new jobs require a live `active` or `trialing` subscription for the configured Price.
-
-The selected live Stripe account (`acct_1TBHiwAun2WUinl2`) has one active subscription option:
-
-- **VOD Clipper Yearly Access** — **$49 USD per year**
-- Live Price ID: `price_1U6mzHAun2WUinl2owQSnjUX`
-
-Use that Price ID with a live secret key from the same Stripe account. Stripe test-mode objects are separate, so local test-mode Checkout requires a matching test-mode copy of this annual Price rather than mixing the live Price with a test key.
-
-1. In the live [Stripe Dashboard](https://dashboard.stripe.com/products), confirm the recurring Product and copy its `price_...` ID.
-2. Configure the live [Stripe Customer Portal](https://dashboard.stripe.com/settings/billing/portal) so customers can update payment methods and cancel subscriptions.
-3. Add a webhook endpoint ending in `/api/billing/webhook` and subscribe it to `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`, and `customer.subscription.deleted`.
-4. Put values from the same Stripe mode in `backend/.env`. For the live annual plan, use:
+Create a Zernio API key and add the following to `backend/.env`:
 
 ```dotenv
-BILLING_ENABLED=true
-STRIPE_SECRET_KEY=sk_live_your_secret_key
-STRIPE_WEBHOOK_SECRET=whsec_your_endpoint_signing_secret
-STRIPE_PRICE_ID=price_1U6mzHAun2WUinl2owQSnjUX
-APP_URL=https://vod-clipper.com
-# STRIPE_ALLOW_PROMOTION_CODES=false
+APP_URL=http://localhost:5173
+ZERNIO_API_KEY=your_zernio_api_key
+YOUTUBE_PUBLIC_API_URL=http://localhost:8787
+YOUTUBE_OAUTH_REDIRECT_URI=http://localhost:8787/api/youtube/oauth/callback
 ```
 
-For local webhook testing, the Stripe CLI can forward signed events and print the matching `whsec_...` secret:
+`YOUTUBE_OAUTH_REDIRECT_URI` is optional when it is exactly `${YOUTUBE_PUBLIC_API_URL}/api/youtube/oauth/callback`. Despite its legacy name, this is Ravi's return endpoint for Zernio's hosted YouTube connection flow; Ravi does not store Google client secrets or YouTube refresh tokens.
 
-```bash
-stripe listen --forward-to localhost:8787/api/billing/webhook
+Ravi creates two deterministic Zernio profiles per Firebase user: a `main` role profile and a `clips` role profile. Each profile contains exactly one YouTube account, which respects Zernio's one-account-per-platform-per-profile rule. The two profiles are named from a hash of the Firebase UID plus their role, and each role must connect a different underlying YouTube channel.
+
+Zernio account capacity is shared at the Zernio workspace level. Zernio currently includes the first two connected accounts for free, which remains enough for one Ravi user: one main-channel account in the main profile and one clips-channel account in the clips profile. A multi-user production deployment needs a Zernio plan with enough additional connected-account capacity.
+
+### 4. Configure Groq and the downloader
+
+Add the Groq key to `backend/.env`:
+
+```dotenv
+GROQ_API_KEY=your_groq_api_key_here
 ```
 
-Checkout and the Customer Portal are hosted by Stripe and created by the backend, so this integration does not need a Stripe publishable key in the frontend. Never put `STRIPE_SECRET_KEY` or `STRIPE_WEBHOOK_SECRET` in a `VITE_...` variable.
-
-## 3. Configure the residential media proxy
-
-Set the IPRoyal residential HTTP(S) proxy URL in `backend/.env`:
+For local direct YouTube access, no proxy variable is required. On a datacenter host, configure the IPRoyal residential endpoint:
 
 ```dotenv
 RESIDENTIAL_PROXY_URL=http://username:password@geo.iproyal.com:12321
 ```
 
-Percent-encode reserved characters in the username or password. `MEDIA_PROXY_URL` remains supported as a backwards-compatible alias; do not set both names to different values. Invalid proxy configuration fails closed instead of silently falling back to the server's datacenter IP.
+Percent-encode reserved characters in the username or password. `MEDIA_PROXY_URL` remains a backwards-compatible alias; if both variables are set, they must be identical. Invalid proxy configuration fails closed rather than silently falling back to the server's datacenter IP.
 
-yt-dlp uses this proxy for YouTube extraction and the complete bounded source download. Groq, Firebase, Stripe, and other backend traffic stays direct. Proxy credentials are supplied to yt-dlp through a private stdin configuration rather than command-line arguments, and are redacted from job progress and errors. Use a provider and plan that permits this traffic, and process only media you are authorized to download and reuse.
+`yt-dlp` uses the proxy for YouTube extraction and the complete bounded source download. Groq, Firebase, Zernio media uploads and API requests, Stripe, and other backend traffic remain direct. Credentials are passed to `yt-dlp` through private stdin configuration rather than process arguments and are redacted from job progress and errors.
 
-For IPRoyal endpoints, the backend derives a fresh eight-character sticky session for each attempt while leaving the base credential stored in the environment unchanged. IPRoyal's high-end streaming pool is plan-specific, so it is opt-in with `YTDLP_IPROYAL_STREAMING=true`. The production Railway service uses that setting because an authenticated media-download canary against its configured IPRoyal account passed with the streaming pool enabled. Set `YTDLP_ROTATE_IPROYAL_SESSION=false` only when a fixed session is intentional.
+For IPRoyal, Ravi derives a fresh eight-character sticky session for each retry while leaving the base credential unchanged. IPRoyal's high-end streaming pool is plan-specific, so enable it only when the account supports it:
 
-## 4. Configure and install the backend
+```dotenv
+YTDLP_IPROYAL_STREAMING=true
+```
 
-From the repository root:
+Set `YTDLP_ROTATE_IPROYAL_SESSION=false` only when a fixed proxy session is intentional. Use a provider and plan that permit this traffic, and process only media you are authorized to download and reuse.
+
+### 5. Run Ravi
+
+Start the backend in one terminal:
 
 ```bash
 cd backend
-npm ci
-cp .env.example .env
+npm run dev
 ```
 
-Edit `backend/.env` and set:
+Start the frontend in another:
 
-```dotenv
-GROQ_API_KEY=your_groq_api_key_here
-FIREBASE_SERVICE_ACCOUNT_PATH=./firebase-service-account.json
-# Optional on datacenter hosts:
-# RESIDENTIAL_PROXY_URL=http://username:password@geo.iproyal.com:12321
+```bash
+cd frontend
+npm run dev
 ```
 
-The remaining values have local defaults:
+Open `http://localhost:5173`, sign in, connect the main channel and a distinct clips channel through Zernio, confirm the certifications, and turn watching on. Vite proxies `/api` and `/files` to `http://localhost:8787` during local development.
+
+## Zernio automation environment variables
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
-| `CLIP_PICKER_MODEL` | Model used to select and rank clip moments | `openai/gpt-oss-120b` |
-| `GROQ_TRANSCRIBE_MODEL` | Whisper model used to transcribe audio | `whisper-large-v3` |
+| `APP_URL` | Exact frontend origin used for connection return URLs and CORS | Required |
+| `ZERNIO_API_KEY` | Backend-only Zernio API key used to manage profiles, connections, external posts, media, and posts | Required |
+| `YOUTUBE_PUBLIC_API_URL` | Public backend origin used to build the channel-connection return URL | Required |
+| `YOUTUBE_OAUTH_REDIRECT_URI` | Ravi endpoint to which Zernio returns after a channel connection | `${YOUTUBE_PUBLIC_API_URL}/api/youtube/oauth/callback` |
+| `ZERNIO_BASE_URL` | Optional Zernio API base override | `https://zernio.com/api/v1` |
+| `ZERNIO_REQUEST_TIMEOUT_MS` | Timeout for ordinary Zernio API requests | `20000` |
+| `ZERNIO_UPLOAD_TIMEOUT_MS` | Timeout for uploading one rendered clip to Zernio's presigned URL | `900000` |
+| `YOUTUBE_WATCH_POLL_MS` | External-post sync interval, constrained to 1–60 minutes | `60000` |
+| `YOUTUBE_OAUTH_STATE_TTL_MS` | One-time channel-connection state lifetime, constrained to 1–15 minutes | `600000` |
+
+Channel automation is reported as `setup_required` by `/api/health` until all required values are present. Secrets belong in the deployment platform's secret manager, never in the frontend or repository.
+
+## Processing and downloader environment variables
+
+| Variable | Purpose | Default |
+| --- | --- | --- |
 | `PORT` | Backend HTTP port | `8787` |
-| `TRANSCRIBE_CHUNK_SEC` | Seconds of audio per transcription request; sized for the API's file-size limit, not timing accuracy | `600` |
-| `TRANSCRIBE_CONCURRENCY` | How many chunks to transcribe at once | `3` |
-| `YTDLP_METADATA_TIMEOUT_MS` | Maximum time for yt-dlp metadata extraction | `120000` |
-| `YTDLP_DOWNLOAD_TIMEOUT_MS` | Overall metadata, proxy-retry, and source-download deadline | `1800000` |
-| `YTDLP_SOCKET_TIMEOUT_SEC` | Per-socket network timeout | `30` |
+| `CLIP_PICKER_MODEL` | Groq model used to select and rank moments | `openai/gpt-oss-120b` |
+| `GROQ_TRANSCRIBE_MODEL` | Whisper transcription model | `whisper-large-v3` |
+| `TRANSCRIBE_CHUNK_SEC` | Seconds of audio per transcription request | `600` |
+| `TRANSCRIBE_CONCURRENCY` | Audio chunks transcribed concurrently | `3` |
+| `YTDLP_METADATA_TIMEOUT_MS` | `yt-dlp` metadata deadline | `120000` |
+| `YTDLP_DOWNLOAD_TIMEOUT_MS` | Overall source-preparation deadline | `1800000` |
+| `YTDLP_SOCKET_TIMEOUT_SEC` | Per-socket timeout in seconds | `30` |
 | `YTDLP_MAX_DURATION_SEC` | Maximum accepted source duration | `14400` |
-| `YTDLP_MAX_SOURCE_BYTES` | Live aggregate cap for yt-dlp fragments, inputs, and merged source | `2147483648` |
+| `YTDLP_MAX_SOURCE_BYTES` | Aggregate source/fragments/merge byte cap | `2147483648` |
 | `YTDLP_MAX_HEIGHT` | Preferred maximum source height | `720` |
 | `YTDLP_CONCURRENT_FRAGMENTS` | Concurrent DASH/HLS fragment downloads | `4` |
-| `YTDLP_SESSION_ATTEMPTS` | Fresh IPRoyal sessions tried after YouTube blocks an IP | `3` |
-| `YTDLP_RETRY_BACKOFF_MS` | Initial backoff between fresh-session attempts | `250` |
-| `YTDLP_ROTATE_IPROYAL_SESSION` | Add or replace an IPRoyal sticky-session ID per attempt | `true` |
-| `YTDLP_IPROYAL_STREAMING` | Opt into IPRoyal's plan-specific high-end streaming pool | `false` |
-| `YTDLP_REQUIRE_PROXY` | Fail production readiness when no residential proxy is configured | `true` in production |
-| `JOB_PROCESS_CONCURRENCY` | Maximum whole jobs downloading/transcribing/rendering at once | `1` |
-| `MAX_OUTSTANDING_JOBS` | Maximum queued and running jobs across the service | `10` |
-| `MAX_OUTSTANDING_JOBS_PER_USER` | Maximum queued and running jobs for one user | `2` |
-| `YTDLP_COOKIES_FILE` | Optional server-side Netscape cookies file | Unset |
-| `RESIDENTIAL_PROXY_URL` | Authenticated HTTP(S) proxy for yt-dlp's YouTube traffic | Direct locally; required in production |
-| `BILLING_ENABLED` | Enforce a live Stripe subscription before creating a job | `false` |
-| `APP_URL` | Browser origin/path used for Stripe return URLs | Required with billing |
+| `YTDLP_SESSION_ATTEMPTS` | Fresh proxy sessions tried after an IP block | `3` |
+| `YTDLP_RETRY_BACKOFF_MS` | Initial delay between session attempts | `250` |
+| `YTDLP_ROTATE_IPROYAL_SESSION` | Rotate the IPRoyal sticky-session ID per attempt | `true` |
+| `YTDLP_IPROYAL_STREAMING` | Opt into IPRoyal's plan-specific streaming pool | `false` |
+| `YTDLP_REQUIRE_PROXY` | Fail production readiness without a residential proxy | `true` in production |
+| `JOB_PROCESS_CONCURRENCY` | Whole clipping jobs processed concurrently | `1` |
+| `MAX_OUTSTANDING_JOBS` | Maximum queued/running jobs across the service | `10` |
+| `MAX_OUTSTANDING_JOBS_PER_USER` | Maximum queued/running jobs per user | `2` |
+| `YTDLP_COOKIES_FILE` | Optional secret-mounted Netscape cookies file | Unset |
+| `RESIDENTIAL_PROXY_URL` | Authenticated HTTP(S) proxy used only by `yt-dlp` | Direct locally; required in production |
 
-## 5. Install the frontend
+See `backend/.env.example` for additional timeout, rendering, cookie, and model overrides.
 
-In the frontend directory, install its locked dependencies:
+## Production deployment
 
-```bash
-npm ci
+The backend must have a stable public HTTPS origin. For the current production domains, use this exact Zernio return URL:
+
+```text
+https://api.vod-clipper.com/api/youtube/oauth/callback
 ```
 
-If you have not already done so, copy `frontend/.env.example` to `frontend/.env` and fill in the Firebase Web configuration described above.
+Set at least:
 
-## 6. Run locally
-
-Start the backend in the first terminal:
-
-```bash
-cd backend
-npm run dev
+```dotenv
+NODE_ENV=production
+APP_URL=https://vod-clipper.com
+ZERNIO_API_KEY=your_production_zernio_api_key
+YOUTUBE_PUBLIC_API_URL=https://api.vod-clipper.com
+YOUTUBE_OAUTH_REDIRECT_URI=https://api.vod-clipper.com/api/youtube/oauth/callback
 ```
 
-The API listens on `http://localhost:8787`.
+Provide Firebase, Groq, Zernio, and proxy secrets separately. Ravi sends the exact return URL, including a short-lived one-time state value and channel role, when it requests Zernio's hosted connection URL.
 
-Start the frontend in a second terminal:
+### Durable state and scaling
 
-```bash
-cd frontend
-npm run dev
-```
+Mount a persistent volume at `/app/jobs` in production. The backend stores:
 
-Open `http://localhost:5173`. Vite proxies `/api` and `/files` to the backend during local development.
+- rendered clips and per-job `job.json` files under `/app/jobs/<job-id>/`;
+- per-user role-specific Zernio profile/account references, automation settings, deduplication events, publishing state, and one-time connection state under `/app/jobs/_ravi_automation/`.
 
-Sign in with Google or create an email/password account, paste a supported public YouTube URL, select the clip options, and submit the job. Downloading, transcription, and video rendering can take several minutes for long sources.
+The file-backed store uses atomic writes and in-process locking, but it is a **single-instance design**. Do not run multiple backend replicas against this implementation: instances do not share in-memory job execution state or cross-process locks. Moving to multiple replicas requires a shared database/queue plus coordinated workers and private object storage.
+
+Without a persistent `/app/jobs` volume, automation state, deduplication history, job history, and rendered clips can disappear on redeploy. The Zernio connections themselves remain in Zernio, but Ravi may no longer know which profile/account belongs to a user and the user may need to reconnect.
+
+## Dormant Stripe integration
+
+Pricing is currently removed from Ravi and deployed environments should keep `BILLING_ENABLED=false`. The Stripe Checkout, Customer Portal, webhook, and subscription-gate code remains for a possible later reactivation. When billing is disabled, Stripe keys and a Price ID are not required.
+
+The retained billing configuration has one plan only: **$49 USD per year** (`price_1U6mzHAun2WUinl2owQSnjUX`). If billing is re-enabled, keep that as the only tier and use its live Stripe account's Checkout/Portal settings and webhook secret. Never expose `STRIPE_SECRET_KEY` or `STRIPE_WEBHOOK_SECRET` in frontend variables or mix live and test-mode objects.
+
+## API overview
+
+Authenticated routes require a Firebase ID token.
+
+| Method and route | Purpose |
+| --- | --- |
+| `GET /api/youtube/automation` | Read the signed-in user's two channel connections and watcher status |
+| `POST /api/youtube/oauth/start` | Begin Zernio's hosted connection flow for the requested `main` or `clips` role |
+| `GET /api/youtube/oauth/callback` | Validate the one-time state and record the Zernio-connected YouTube account |
+| `PATCH /api/youtube/automation` | Save settings or enable/pause watching |
+| `POST /api/youtube/check-now` | Immediately sync and poll the main channel's native and Zernio-authored posts |
+| `DELETE /api/youtube/connection/:role` | Pause automation and disconnect the `main` or `clips` account |
+| `GET /api/jobs` | List automatically created clipping jobs for the signed-in user |
+| `GET /api/jobs/:id` | Read one job and its published clip URLs |
+| `DELETE /api/jobs/:id` | Cancel/delete a job and its local artifacts |
+| `POST /api/jobs` | Returns `410 channel_automation_only`; manual jobs are disabled |
 
 ## Tests and build checks
 
-Run the backend billing, yt-dlp validation/redaction/process, and local-render tests:
-
 ```bash
 cd backend
 npm test
-```
 
-Run the frontend URL, billing-state, and price-formatting tests:
-
-```bash
-cd frontend
+cd ../frontend
 npm test
-```
-
-Verify the production frontend bundle with:
-
-```bash
-cd frontend
 npm run build
 ```
 
-## Security and deployment limitations
+## Security and operational limitations
 
-- Never commit `.env` files, Firebase Admin service-account JSON, private keys, or provider credentials. The included templates contain placeholders only. Rotate any credential that is exposed.
-- Stripe webhook signatures are verified against the raw request body. The live subscription is queried and matched against the server-selected Price before every new job; browser state and Firebase claims alone never grant paid access.
-- Stripe billing mappings are cached in Firebase custom claims. Firebase replaces the complete custom-claims map on each write, so production deployments that also mutate roles or other claims need one coordinated claims writer (or should move canonical billing state to a database) to avoid concurrent read/merge/write races.
-- Residential proxy credentials stay in the backend. The proxy provider can observe connection destinations and traffic volume, so use a provider you trust and keep its credentials in your host's secret manager.
-- The authenticated `/api/jobs` routes verify Firebase ID tokens and restrict job metadata by Firebase user ID. Rendered `/files/<job>/clips/<clip>.mp4` URLs are intentionally shareable without authentication, but backend working files are not served. Anyone who obtains a clip URL can still fetch that rendered clip.
-- CORS is currently open and there is no rate limiting, quota enforcement, or production hardening. Do not expose this backend directly to the public internet as-is.
-- Job metadata is cached in memory and persisted to a `job.json` file per job directory, so history survives a restart. Multiple backend instances still do not share state, and history is only as durable as the volume holding `backend/jobs/`.
-- Downloaded source media is written to an ephemeral OS temp directory while a job runs and removed after rendering, failure, or cancellation. Startup recovery sweeps stale temp workspaces, non-public partial renders, and legacy `source.*` files from `backend/jobs/`. Rendered clips and job metadata remain until the user deletes the job; there is no automatic retention policy.
-- Firebase Authentication does not make file storage private. A production version should move job state to a database, store media in private object storage, authorize every download, and add cleanup/retention jobs.
-- yt-dlp connects to YouTube directly (through the configured residential proxy, when present). Groq receives compressed audio chunks for transcription and the resulting timestamped transcript for clip selection. FFmpeg processing runs locally on the backend.
-- Only process media you are authorized to download and reuse. You are responsible for complying with YouTube's terms, copyright law, and the terms and quotas of all configured API providers.
+- Never commit `.env` files, Firebase service-account JSON, Zernio API keys, proxy credentials, or downloader cookies.
+- The Zernio API key is server-wide and must remain backend-only. The browser receives only Zernio's short-lived hosted connection URL; Firebase identity, one-time state, role, profile ID, and connected account ID are validated before a connection is saved.
+- Live channel polling and persistent per-video event state provide recovery and deduplication across native YouTube uploads and Zernio-authored posts. Existing uploads are baselined when watching starts so Ravi does not unexpectedly process a backlog.
+- Zernio is used for YouTube account authorization, published-post discovery, and finished-clip publishing. It does not download the source-video file. Source retrieval uses `yt-dlp`, optionally through the configured residential proxy. Use Ravi only for channels/content you control and ensure the downloads, uploads, proxy usage, and automation comply with YouTube's terms, copyright law, and provider terms.
+- Downloaded source media lives in an ephemeral OS temporary directory while a job runs and is removed after rendering, failure, or cancellation. Rendered clips and job metadata remain until deletion; there is no automatic retention policy.
+- `/files/<job>/clips/<clip>.mp4` URLs are intentionally shareable without authentication. Anyone who obtains one can fetch the rendered clip. Production hardening should use private object storage and authorize each download.
+- Firebase ID-token checks isolate job and automation metadata by user, but the service does not yet include full rate limiting, quotas, or distributed abuse controls. Zernio, YouTube, and Groq quotas still apply.
+- If either Zernio account is disconnected or becomes unhealthy, Ravi pauses that user's automation and asks them to reconnect the affected role.
+- Automatic posts can partially succeed. Ravi records the Zernio post ID and reconciles it before retrying so it does not knowingly publish the same clip twice; failures that cannot be safely reconciled require operator/user review.
 
 ## Current product limitations
 
-- The vertical reframe uses a center crop or padded layout; it does not track faces or active speakers.
-- The virality score is the clip-selection model's relative judgment across the returned clips, not a trained prediction or guarantee of performance.
-- Processing is CPU-, memory-, disk-, and network-intensive. Whole jobs are serialized by default, and the API caps queued/running work globally and per user, to keep proxy traffic and resource usage bounded. Long videos substantially increase runtime, and transcription cost/time scales with episode length since it's billed per API call.
-- The pipeline accepts individual public YouTube video URLs. Private, restricted, live, unavailable, oversized, or YouTube-blocked videos will fail.
+- Only new public main-channel uploads returned by Zernio's live sync or published-post listing are detected. Private, members-only, scheduled-before-publication, live, restricted, unavailable, oversized, or YouTube-blocked sources may be skipped or fail.
+- There is no historical backfill when watching is first enabled.
+- The reframe uses face-aware placement when available, with center-crop/padded fallbacks; it does not track active speakers throughout the entire clip.
+- The virality score is the clip-selection model's relative judgment, not a trained performance guarantee.
+- Processing is CPU-, memory-, disk-, network-, and quota-intensive. Jobs are serialized by default, and long videos increase processing time and transcription usage.
 
 ## Project structure
 
 ```text
 backend/
   src/
-    server.js              # authenticated API and job orchestration
+    server.js                       # authenticated API and automatic job orchestration
     lib/
-      firebaseAdmin.js     # Firebase ID-token verification and billing claim storage
-      stripeBilling.js     # Checkout, Customer Portal, webhooks, and subscription gate
-      ytdlp.js             # URL validation, IPRoyal config, metadata, and source download
-      ffmpeg.js            # local-source clip rendering, reframing, and subtitle burn-in
-      groqTranscribe.js    # word-level-timestamped transcription via Whisper on Groq
-      clipPicker.js        # clip selection and ranking through Groq
-  jobs/                    # local per-job media and output (gitignored)
+      zernioApi.js                  # bounded Zernio profiles, accounts, media, and posts client
+      youtubeAutomationService.js   # two-channel connection, watcher, deduplication, and publishing lifecycle
+      youtubeAutomationStore.js     # durable single-instance file store
+      firebaseAdmin.js              # Firebase ID-token verification
+      ytdlp.js                      # source validation/download and IPRoyal integration
+      ffmpeg.js                     # vertical rendering, reframing, and subtitle burn-in
+      groqTranscribe.js             # Whisper transcription with word timestamps
+      clipPicker.js                 # clip selection and ranking through Groq
+      stripeBilling.js              # dormant optional subscription integration
+  jobs/                             # local job output and automation state (gitignored)
 frontend/
   src/
-    AuthContext.jsx        # Firebase sign-in state and actions
-    api.js                 # authenticated API requests
-    firebase.js            # Firebase Web configuration
-    components/            # app screens and controls
-  test/                    # Node test runner tests
+    AuthContext.jsx                 # Firebase sign-in state and actions
+    api.js                          # authenticated automation/job API requests
+    firebase.js                     # Firebase Web configuration
+    components/
+      AutomationDashboard.jsx       # main/clips connection, watcher controls, and activity
 ```
