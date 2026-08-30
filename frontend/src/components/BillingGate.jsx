@@ -18,7 +18,7 @@ export default function BillingGate({
   const active = subscriptionIsActive(billing);
   const needsPortal = billingNeedsPortal(billing);
   const needsConfirmation = checkoutConfirmationPending && !needsPortal;
-  const planName = billing?.planName || billing?.price?.nickname || "VOD Clipper Pro";
+  const planName = billing?.planName || billing?.price?.nickname || "Ravi access";
 
   return (
     <div className="billing-shell">
@@ -26,7 +26,7 @@ export default function BillingGate({
         <div className="brand">
           <Waveform className="brand-mark" bars={5} />
           <span className="brand-name">
-            VOD<span className="brand-accent">Clipper</span>
+            Ra<span className="brand-accent">vi</span>
           </span>
         </div>
         <button className="billing-signout" onClick={signOut}>Sign out</button>

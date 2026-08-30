@@ -4,27 +4,27 @@ import Waveform from "./Waveform.jsx";
 
 const FEATURES = [
   {
-    label: "Find the hook",
-    title: "AI-picked moments",
-    text: "The full transcript is analyzed to surface sharp, self-contained moments people will actually watch.",
+    label: "Built for your channel",
+    title: "Every upload has more to give",
+    text: "Give Ravi a new main-channel video and turn one upload into a full set of short-form opportunities.",
   },
   {
-    label: "Polish the cut",
-    title: "Captions and reframing",
-    text: "Each clip is resized for 9:16 and finished with animated, word-by-word captions automatically.",
+    label: "Find the moment",
+    title: "Engaging clips, made for you",
+    text: "Ravi finds the strongest hooks, reframes them for 9:16, and adds polished captions without a timeline to edit.",
   },
   {
-    label: "Post with confidence",
-    title: "Ranked by potential",
-    text: "A clear virality score helps you choose the strongest clip first, then download it ready to publish.",
+    label: "Ready to publish",
+    title: "Ready for your clips channel",
+    text: "Finished clips come back ready for your clips channel, so every main-channel upload keeps working after publish day.",
   },
 ];
 
 const STEPS = [
-  ["01", "Paste a link", "Add any public YouTube video."],
-  ["02", "Choose the output", "Set clip count, length, and style."],
-  ["03", "Let AI find it", "We identify, crop, and caption the best moments."],
-  ["04", "Download and post", "Get finished vertical MP4s, ready to share."],
+  ["01", "Paste your latest upload", "Give Ravi any public video from your main channel."],
+  ["02", "Choose the output", "Set the clip count, length, and style you want."],
+  ["03", "Ravi gets to work", "The best moments are selected, reframed, captioned, and packaged."],
+  ["04", "Publish your clips", "Download polished vertical videos ready for your clips channel."],
 ];
 
 function ArrowIcon() {
@@ -45,31 +45,31 @@ function CheckIcon() {
 
 function ExampleTransformation() {
   return (
-    <section className="landing-transform-demo" aria-label="Example transformation from a full podcast video to a vertical clip">
+    <section className="landing-transform-demo" aria-label="Example transformation from a main-channel video to a vertical clip">
       <figure className="demo-source">
         <div className="demo-landscape-frame">
           <img
             src="/podcast-demo-frame.jpg"
-            alt="Two podcast hosts recording a long-form episode"
+            alt="Two creators recording a long-form video"
             width="1672"
             height="941"
             decoding="async"
-            fetchPriority="high"
+            fetchpriority="high"
           />
           <span className="demo-play" aria-hidden="true">▶</span>
           <span className="demo-time">1:24:18</span>
           <span className="demo-video-progress" aria-hidden="true"><i /></span>
         </div>
         <figcaption>
-          <strong>Full podcast episode</strong>
-          <span>16:9 source video</span>
+          <strong>Your latest upload</strong>
+          <span>Main channel · 16:9</span>
         </figcaption>
       </figure>
 
-      <div className="demo-transform-arrow" role="img" aria-label="AI selects and reframes the best moment">
+      <div className="demo-transform-arrow" role="img" aria-label="Ravi selects and reframes the best moment">
         <span className="demo-arrow-line" aria-hidden="true" />
         <span className="demo-arrow-icon" aria-hidden="true"><ArrowIcon /></span>
-        <p>AI picks &amp; reframes</p>
+        <p>Ravi picks &amp; reframes</p>
       </div>
 
       <figure className="demo-output">
@@ -92,8 +92,8 @@ function ExampleTransformation() {
           <span className="demo-video-progress demo-phone-progress" aria-hidden="true"><i /></span>
         </div>
         <figcaption>
-          <strong>Ready-to-post clip</strong>
-          <span>9:16 · captions added</span>
+          <strong>Your clips channel</strong>
+          <span>9:16 · captioned &amp; ready</span>
         </figcaption>
       </figure>
     </section>
@@ -126,7 +126,7 @@ function LinkForm({ url, setUrl, touched, setTouched, onStart, onUrlEdit }) {
           type="url"
           inputMode="url"
           autoComplete="url"
-          placeholder="Paste a YouTube video link"
+          placeholder="Paste a YouTube video link to try Ravi"
           value={url}
           aria-invalid={showError}
           aria-describedby={showError ? "landing-url-error" : "landing-url-help"}
@@ -137,7 +137,7 @@ function LinkForm({ url, setUrl, touched, setTouched, onStart, onUrlEdit }) {
           onBlur={() => setTouched(true)}
         />
         <button className="landing-url-submit" type="submit">
-          <span>Create my clips</span>
+          <span>Let Ravi clip it</span>
           <span className="landing-submit-arrow"><ArrowIcon /></span>
         </button>
       </div>
@@ -147,7 +147,7 @@ function LinkForm({ url, setUrl, touched, setTouched, onStart, onUrlEdit }) {
             {normalizedUrl ? "Enter a valid YouTube video link to continue." : "Paste a YouTube video link to continue."}
           </span>
         ) : (
-          <span id="landing-url-help">Start here. You’ll choose clip length and style next.</span>
+          <span id="landing-url-help">Try Ravi now with any public video. You’ll choose the output next.</span>
         )}
       </div>
     </form>
@@ -165,15 +165,14 @@ export default function Landing({ initialUrl = "", onStart, onSignIn, onUrlEdit 
   return (
     <div className="landing">
       <header className="landing-header">
-        <div className="brand landing-brand" aria-label="VOD Clipper home">
+        <div className="brand landing-brand" aria-label="Ravi home">
           <span className="landing-brand-mark"><Waveform className="brand-mark" bars={7} /></span>
-          <span className="brand-name">VOD<span className="brand-accent">Clipper</span></span>
+          <span className="brand-name">Ra<span className="brand-accent">vi</span></span>
         </div>
 
         <nav className="landing-nav" aria-label="Primary navigation">
           <a href="#features">Features</a>
-          <a href="#how-it-works">How it works</a>
-          <span className="landing-nav-price">$49 / year</span>
+          <a href="#how-it-works">How Ravi works</a>
           <button className="landing-signin" type="button" onClick={onSignIn}>
             Sign in <ArrowIcon />
           </button>
@@ -183,10 +182,10 @@ export default function Landing({ initialUrl = "", onStart, onSignIn, onUrlEdit 
       <main>
         <section className="landing-hero" aria-labelledby="landing-title">
           <h1 id="landing-title" className="landing-title">
-            Turn long-form video into <em>clips people stop for.</em>
+            Meet Ravi. Your <em>personal clipping agent.</em>
           </h1>
           <p className="landing-subtitle">
-            VOD Clipper finds the strongest moments, reframes them for vertical, and adds polished captions—so you can go from podcast to post in minutes.
+            Give Ravi a video from your main channel. Your clipping partner finds the strongest moments, creates engaging vertical clips, and gets them ready for your clips channel while you focus on the next upload.
           </p>
 
           <LinkForm
@@ -199,9 +198,9 @@ export default function Landing({ initialUrl = "", onStart, onSignIn, onUrlEdit 
           />
 
           <div className="landing-trust-row" aria-label="Product highlights">
-            <span><CheckIcon /> No editing required</span>
-            <span><CheckIcon /> Public YouTube links</span>
-            <span><CheckIcon /> One simple annual plan</span>
+            <span><CheckIcon /> Made for every upload</span>
+            <span><CheckIcon /> Creates engaging clips</span>
+            <span><CheckIcon /> Ready for your clips channel</span>
           </div>
         </section>
 
@@ -209,8 +208,8 @@ export default function Landing({ initialUrl = "", onStart, onSignIn, onUrlEdit 
 
         <section className="landing-section landing-features" id="features">
           <div className="landing-section-head">
-            <h2>From one long video to your best short-form content.</h2>
-            <p>Everything tedious happens in the background. You stay focused on choosing what to publish.</p>
+            <h2>A clipping partner for every upload.</h2>
+            <p>You focus on the main channel. Ravi handles the repetitive work that turns every video into a steady short-form presence.</p>
           </div>
           <div className="feature-grid">
             {FEATURES.map((feature, index) => (
@@ -229,7 +228,7 @@ export default function Landing({ initialUrl = "", onStart, onSignIn, onUrlEdit 
 
         <section className="landing-section landing-steps" id="how-it-works">
           <div className="landing-section-head compact">
-            <h2>Four steps. Zero timeline editing.</h2>
+            <h2>Give Ravi a video. Keep your clips channel moving.</h2>
           </div>
           <div className="steps-row">
             {STEPS.map(([number, title, text]) => (
@@ -246,9 +245,9 @@ export default function Landing({ initialUrl = "", onStart, onSignIn, onUrlEdit 
 
         <section className="landing-bottom-cta">
           <Waveform className="bottom-cta-wave" bars={32} />
-          <h2>Find it in minutes.</h2>
+          <h2>Give Ravi a video. Get your best clips back.</h2>
           <button type="button" onClick={() => document.getElementById("landing-youtube-url")?.focus()}>
-            Paste your first link <ArrowIcon />
+            Try Ravi with a link <ArrowIcon />
           </button>
         </section>
       </main>
@@ -256,10 +255,10 @@ export default function Landing({ initialUrl = "", onStart, onSignIn, onUrlEdit 
       <footer className="landing-footer">
         <div className="brand landing-brand">
           <span className="landing-brand-mark"><Waveform className="brand-mark" bars={7} /></span>
-          <span className="brand-name">VOD<span className="brand-accent">Clipper</span></span>
+          <span className="brand-name">Ra<span className="brand-accent">vi</span></span>
         </div>
-        <span>Long-form in. Short-form out.</span>
-        <span>© {new Date().getFullYear()} VOD Clipper</span>
+        <span>Your personal clipping partner.</span>
+        <span>© {new Date().getFullYear()} Ravi</span>
       </footer>
     </div>
   );

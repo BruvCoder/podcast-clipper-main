@@ -1,6 +1,6 @@
-# VOD Clipper
+# Ravi
 
-VOD Clipper turns a public YouTube podcast into ranked, subtitled vertical clips. Users sign in with Firebase Authentication, subscribe through Stripe when billing is enabled, choose clip settings, and receive MP4 clips rendered locally by the backend.
+Ravi is a personal clipping agent that turns a public YouTube video into ranked, subtitled vertical clips. Users sign in with Firebase Authentication, choose clip settings, and receive MP4 clips rendered locally by the backend. The optional Stripe integration remains available in the codebase but pricing and subscription checks are currently disabled in the product experience.
 
 > This repository is currently designed for local development. Read [Security and deployment limitations](#security-and-deployment-limitations) before exposing it to the internet.
 
@@ -8,11 +8,10 @@ VOD Clipper turns a public YouTube podcast into ranked, subtitled vertical clips
 
 1. The frontend signs users in with Google or email/password through Firebase Authentication.
 2. Authenticated API requests include a Firebase ID token. The backend verifies the token with Firebase Admin and keeps each user's jobs separate.
-3. When billing is enabled, Stripe-hosted Checkout sells the server-configured subscription and the backend verifies the live subscription before accepting each new job. Stripe's Customer Portal handles payment updates and cancellation.
-4. The backend runs `yt-dlp` directly to validate the YouTube URL and download a merged, resolution-bounded source into an ephemeral per-job directory. An optional residential HTTP(S) proxy carries all yt-dlp YouTube traffic.
-5. Whisper large-v3 (hosted on Groq) transcribes the audio stream from that local source, producing word-level timestamps derived from acoustic alignment against the audio.
-6. A text model on Groq receives the timestamped transcript and selects, titles, and ranks the best moments.
-7. For each selected moment, FFmpeg seeks into the local source, reframes it to 9:16, and burns in timed subtitles. The temporary source is removed after rendering; the browser polls the job and displays the resulting clips.
+3. The backend runs `yt-dlp` directly to validate the YouTube URL and download a merged, resolution-bounded source into an ephemeral per-job directory. An optional residential HTTP(S) proxy carries all yt-dlp YouTube traffic.
+4. Whisper large-v3 (hosted on Groq) transcribes the audio stream from that local source, producing word-level timestamps derived from acoustic alignment against the audio.
+5. A text model on Groq receives the timestamped transcript and selects, titles, and ranks the best moments.
+6. For each selected moment, FFmpeg seeks into the local source, reframes it to 9:16, and burns in timed subtitles. The temporary source is removed after rendering; the browser polls the job and displays the resulting clips.
 
 ## Requirements
 
@@ -81,9 +80,9 @@ FIREBASE_SERVICE_ACCOUNT_PATH=./firebase-service-account.json
 
 The service-account file is gitignored. Never commit, share, or place its contents in frontend variables. For a deployment platform that stores secrets as environment variables, leave the path unset and set `FIREBASE_SERVICE_ACCOUNT_JSON` to the complete service-account JSON through that platform's secret manager instead.
 
-## 2. Configure Stripe subscriptions
+## 2. Optional dormant Stripe subscriptions
 
-Billing is opt-in for local development. With `BILLING_ENABLED` unset or `false`, signed-in users can use the app without a paywall. Production requires an explicit value: `false` intentionally disables billing, while an omitted or blank value fails closed as a configuration error. With it set to `true`, missing or invalid Stripe configuration fails closed and new jobs require a live `active` or `trialing` subscription for the configured Price. The backend verifies that Price is active, live-mode in production, and exactly $49 USD billed once per year.
+Pricing is currently removed from the Ravi interface, and deployed environments should keep `BILLING_ENABLED=false`. The backend integration is retained for a future reactivation. With billing enabled, missing or invalid Stripe configuration fails closed and new jobs require a live `active` or `trialing` subscription for the configured Price.
 
 The selected live Stripe account (`acct_1TBHiwAun2WUinl2`) has one active subscription option:
 

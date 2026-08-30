@@ -11,8 +11,8 @@ export default function UrlInput({ onNext }) {
   return (
     <div className="card hero-card">
       <Waveform className="hero-waveform" />
-      <h1>Turn any podcast into clips</h1>
-      <p className="subtitle">Paste a YouTube video link to get started.</p>
+      <h1>What should Ravi clip?</h1>
+      <p className="subtitle">Paste a YouTube link and Ravi will find the moments worth sharing.</p>
 
       <input
         type="url"

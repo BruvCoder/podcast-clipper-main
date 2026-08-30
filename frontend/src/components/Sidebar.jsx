@@ -19,9 +19,6 @@ export default function Sidebar({
   onSelectJob,
   onNewClip,
   onDeleteJob,
-  billing,
-  billingAction,
-  onManageBilling,
   open,
   onClose,
 }) {
@@ -54,7 +51,7 @@ export default function Sidebar({
           <div className="brand">
             <Waveform className="brand-mark" bars={5} />
             <span className="brand-name">
-              VOD<span className="brand-accent">Clipper</span>
+              Ra<span className="brand-accent">vi</span>
             </span>
           </div>
         </div>
@@ -65,7 +62,7 @@ export default function Sidebar({
 
         <div className="sidebar-history">
           <span className="sidebar-label">History</span>
-          {jobs.length === 0 && <p className="sidebar-empty">Your clipped episodes will show up here.</p>}
+          {jobs.length === 0 && <p className="sidebar-empty">Your Ravi clip sets will show up here.</p>}
           {jobs.map((j) => (
             <div
               key={j.id}
@@ -80,11 +77,11 @@ export default function Sidebar({
                   onSelectJob(j.id);
                 }
               }}
-              title={j.sourceTitle || "Untitled"}
+              title={j.sourceTitle || "Untitled video"}
             >
               <span className={`history-dot status-${j.status}`} />
               <span className="history-text">
-                <span className="history-title">{j.sourceTitle || "Untitled episode"}</span>
+                <span className="history-title">{j.sourceTitle || "Untitled video"}</span>
                 <span className="history-meta">
                   {j.status === "done"
                     ? `${j.clipCount} clip${j.clipCount === 1 ? "" : "s"}`
@@ -107,24 +104,6 @@ export default function Sidebar({
             </div>
           ))}
         </div>
-
-        {billing?.enabled && (
-          <div className="sidebar-plan">
-            <div className="sidebar-plan-copy">
-              <span className="sidebar-plan-name">{billing.planName || "Pro plan"}</span>
-              <span className="sidebar-plan-status">
-                {(billing.status || billing.subscriptionStatus) === "trialing" ? "Trial active" : "Subscription active"}
-              </span>
-            </div>
-            <button
-              className="sidebar-plan-button"
-              onClick={onManageBilling}
-              disabled={billingAction === "portal"}
-            >
-              {billingAction === "portal" ? "Opening…" : "Manage"}
-            </button>
-          </div>
-        )}
 
         <div className="sidebar-account">
           <div className="account-avatar">{(user?.email || "?")[0].toUpperCase()}</div>

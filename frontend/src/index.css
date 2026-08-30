@@ -1262,8 +1262,7 @@ input[type="range"]::-moz-range-thumb {
   gap: 27px;
 }
 
-.landing-nav a,
-.landing-nav-price {
+.landing-nav a {
   color: #4f5b6c;
   font-size: 13px;
   font-weight: 500;
@@ -1273,11 +1272,6 @@ input[type="range"]::-moz-range-thumb {
 
 .landing-nav a:hover {
   color: #0d1420;
-}
-
-.landing-nav-price {
-  padding-left: 26px;
-  border-left: 1px solid rgba(13, 20, 32, 0.1);
 }
 
 .landing-signin {
@@ -2029,10 +2023,6 @@ input[type="range"]::-moz-range-thumb {
 @media (max-width: 900px) {
   .landing-nav {
     gap: 19px;
-  }
-
-  .landing-nav-price {
-    display: none;
   }
 
   .landing-transform-demo {

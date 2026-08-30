@@ -8,7 +8,7 @@ export default function Loading({ stage }) {
   return (
     <div className="card loading-wrap">
       <Waveform active className="loading-waveform" />
-      <h1>Working on your clips</h1>
+      <h1>Ravi is creating your clips</h1>
 
       <div className="progress-block">
         <div className="progress-row">

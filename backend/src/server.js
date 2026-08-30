@@ -480,7 +480,7 @@ app.use((err, req, res, next) => {
 });
 
 const server = app.listen(PORT, () => {
-  console.log(`VOD Clipper backend listening on http://localhost:${PORT}`);
+  console.log(`Ravi backend listening on http://localhost:${PORT}`);
   if (!runtimeReadiness.ok) {
     console.error("Downloader runtime is not ready; /api/health will return HTTP 503.");
   }
