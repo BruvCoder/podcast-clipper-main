@@ -16,6 +16,8 @@ const MAX_SOURCE_BYTES = positiveInteger(process.env.YTDLP_MAX_SOURCE_BYTES, 2 *
 const MAX_HEIGHT = positiveInteger(process.env.YTDLP_MAX_HEIGHT, 720);
 const CONCURRENT_FRAGMENTS = positiveInteger(process.env.YTDLP_CONCURRENT_FRAGMENTS, 4);
 const MAX_PROGRESS_LINE_BYTES = 64 * 1024;
+const YOUTUBE_CHANNEL_ID_PATTERN = /^UC[A-Za-z0-9_-]{22}$/;
+const YOUTUBE_HANDLE_PATTERN = /^[\p{L}\p{N}](?:[\p{L}\p{M}\p{N}._\-·]*[\p{L}\p{M}\p{N}])?$/u;
 
 function positiveInteger(value, fallback) {
   const parsed = Number.parseInt(value, 10);
@@ -24,6 +26,21 @@ function positiveInteger(value, fallback) {
 
 function invalidYouTubeUrl() {
   return new Error("Enter a valid public YouTube video URL.");
+}
+
+function invalidYouTubeChannelUrl() {
+  const error = new Error("Enter a valid public YouTube channel URL or @handle.");
+  error.code = "ERR_YTDLP_CHANNEL_URL";
+  return error;
+}
+
+function normalizeYouTubeHandle(value) {
+  const candidate = String(value || "").normalize("NFC");
+  if (!candidate.startsWith("@")) return null;
+  const handle = candidate.slice(1);
+  const length = [...handle].length;
+  if (length < 1 || length > 30 || !YOUTUBE_HANDLE_PATTERN.test(handle)) return null;
+  return `@${handle}`;
 }
 
 /**
@@ -64,6 +81,84 @@ function canonicalizeYouTubeUrl(value) {
 
 export function normalizeYouTubeUrl(value) {
   return canonicalizeYouTubeUrl(value).url;
+}
+
+/**
+ * Accepts a public YouTube channel URL (or a bare @handle) and returns a
+ * canonical /videos URL. Keeping this allowlist separate from video URL
+ * handling prevents a user-controlled value from reaching yt-dlp's generic
+ * extractor for an arbitrary host or YouTube endpoint.
+ */
+function canonicalizeYouTubeChannelUrl(value) {
+  if (typeof value !== "string") throw invalidYouTubeChannelUrl();
+  const raw = value.trim();
+  if (!raw || raw.length > MAX_URL_LENGTH) throw invalidYouTubeChannelUrl();
+
+  const directHandle = normalizeYouTubeHandle(raw);
+  if (directHandle) {
+    return {
+      url: `https://www.youtube.com/@${encodeURIComponent(directHandle.slice(1))}/videos`,
+      username: directHandle,
+    };
+  }
+
+  let url;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw invalidYouTubeChannelUrl();
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw invalidYouTubeChannelUrl();
+  }
+  if (url.username || url.password || url.port || url.search || url.hash) {
+    throw invalidYouTubeChannelUrl();
+  }
+  if (!["youtube.com", "www.youtube.com", "m.youtube.com"].includes(url.hostname.toLowerCase())) {
+    throw invalidYouTubeChannelUrl();
+  }
+
+  let decodedPath;
+  try {
+    decodedPath = decodeURIComponent(url.pathname);
+  } catch {
+    throw invalidYouTubeChannelUrl();
+  }
+  const parts = decodedPath.split("/").filter(Boolean);
+  if (["videos", "featured", "shorts", "streams", "live"].includes(parts.at(-1))) {
+    parts.pop();
+  }
+
+  let rootPath;
+  let username = null;
+  const pathHandle = parts.length === 1 ? normalizeYouTubeHandle(parts[0]) : null;
+  if (pathHandle) {
+    username = pathHandle;
+    rootPath = `@${encodeURIComponent(pathHandle.slice(1))}`;
+  } else if (
+    parts.length === 2 &&
+    parts[0] === "channel" &&
+    YOUTUBE_CHANNEL_ID_PATTERN.test(parts[1])
+  ) {
+    rootPath = `channel/${parts[1]}`;
+  } else if (
+    parts.length === 2 &&
+    ["c", "user"].includes(parts[0]) &&
+    /^[A-Za-z0-9._-]{1,100}$/.test(parts[1])
+  ) {
+    rootPath = `${parts[0]}/${parts[1]}`;
+  } else {
+    throw invalidYouTubeChannelUrl();
+  }
+
+  return {
+    url: `https://www.youtube.com/${rootPath}/videos`,
+    username,
+  };
+}
+
+export function normalizeYouTubeChannelUrl(value) {
+  return canonicalizeYouTubeChannelUrl(value).url;
 }
 
 function invalidProxyConfiguration(detail) {
@@ -505,6 +600,73 @@ export async function getVideoInfo(youtubeUrl, options = {}) {
   return { ...parseMetadata(stdout, canonical.videoId), canonicalUrl: canonical.url };
 }
 
+function parseChannelMetadata(stdout) {
+  let info;
+  try {
+    info = JSON.parse(stdout.trim());
+  } catch {
+    throw new Error("yt-dlp returned invalid YouTube channel metadata.");
+  }
+
+  const channelId = String(info?.channel_id || info?.id || "").trim();
+  const title = String(info?.channel || info?.uploader || info?.title || "")
+    .replace(/\s+-\s+Videos\s*$/i, "")
+    .trim();
+  const rawUsername = String(info?.uploader_id || info?.channel_handle || "").trim();
+  const username = normalizeYouTubeHandle(rawUsername);
+  const thumbnailCandidate = [
+    info?.thumbnail,
+    ...(Array.isArray(info?.thumbnails)
+      ? [...info.thumbnails].reverse().map((thumbnail) => thumbnail?.url)
+      : []),
+  ].find((value) => {
+    try {
+      const url = new URL(String(value || ""));
+      return url.protocol === "https:" || url.protocol === "http:";
+    } catch {
+      return false;
+    }
+  });
+
+  if (!YOUTUBE_CHANNEL_ID_PATTERN.test(channelId) || !title) {
+    throw new Error("yt-dlp returned incomplete YouTube channel metadata.");
+  }
+
+  return {
+    id: channelId,
+    channelId,
+    title: title.slice(0, 180),
+    username,
+    thumbnailUrl: thumbnailCandidate || null,
+    url: `https://www.youtube.com/channel/${channelId}`,
+  };
+}
+
+/**
+ * Resolves a public channel link or handle to YouTube's immutable UC… channel
+ * ID. The lookup uses the same private proxy/cookie config and redaction path
+ * as source downloads, while limiting extraction to one flat playlist item.
+ */
+export async function resolveYoutubeChannel(value, options = {}) {
+  const canonical = canonicalizeYouTubeChannelUrl(value);
+  const args = commonArgs().filter((argument) => argument !== "--no-playlist");
+  const stdout = await runYtDlp(
+    [
+      ...args,
+      "--flat-playlist",
+      "--playlist-end",
+      "1",
+      "--dump-single-json",
+      "--skip-download",
+      "--quiet",
+      "--no-warnings",
+      canonical.url,
+    ],
+    { ...options, timeoutMs: options.timeoutMs || METADATA_TIMEOUT_MS }
+  );
+  return parseChannelMetadata(stdout);
+}
+
 function outputFormat() {
   return [
     `bv[vcodec^=avc1][ext=mp4][height<=${MAX_HEIGHT}]+ba[ext=m4a]`,
@@ -735,11 +897,13 @@ export function ytDlpProxyEnabled(environment = process.env) {
 export const __testing = {
   buildPrivateConfig,
   abortAwareDelay,
+  canonicalizeYouTubeChannelUrl,
   canonicalizeYouTubeUrl,
   commonArgs,
   loadProxyUrl,
   minimalChildEnvironment,
   outputFormat,
+  parseChannelMetadata,
   parseMetadata,
   remainingDeadlineMs,
   redactSensitiveText,

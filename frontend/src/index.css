@@ -1374,13 +1374,12 @@ input[type="range"]::-moz-range-thumb {
   align-items: center;
   justify-content: center;
   border-radius: 11px;
-  color: var(--accent);
   background: rgba(255, 255, 255, 0.96);
 }
 
 .landing-connect-icon svg {
-  width: 23px;
-  height: 23px;
+  width: 29px;
+  height: auto;
 }
 
 .landing-submit-arrow {
@@ -1409,8 +1408,8 @@ input[type="range"]::-moz-range-thumb {
   align-items: center;
   justify-content: center;
   flex-wrap: wrap;
-  gap: 10px 23px;
-  margin-top: 17px;
+  gap: 12px;
+  margin-top: 24px;
   color: #687486;
   font-family: var(--font-body);
   font-size: 11.5px;
@@ -1419,15 +1418,25 @@ input[type="range"]::-moz-range-thumb {
 .landing-trust-row > span {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 10px;
+  min-height: 68px;
+  padding: 7px 15px 7px 8px;
+  border: 1px solid rgba(25, 53, 92, 0.09);
+  border-radius: 17px;
+  background: rgba(255, 255, 255, 0.76);
+  box-shadow: 0 18px 38px -30px rgba(31, 72, 134, 0.65);
+  color: #4f5d70;
+  font-weight: 600;
 }
 
-.landing-trust-row svg {
-  width: 15px;
-  height: 15px;
-  color: var(--accent);
-  border-radius: 50%;
-  background: var(--accent-soft);
+.landing-trust-row img {
+  width: 52px;
+  height: 52px;
+  flex: 0 0 52px;
+  object-fit: contain;
+  border-radius: 13px;
+  background: linear-gradient(145deg, #ffffff, #f4f8ff);
+  filter: drop-shadow(0 8px 9px rgba(31, 72, 134, 0.12));
 }
 
 .landing-transform-demo {
@@ -3009,19 +3018,24 @@ input[type="range"]::-moz-range-thumb {
   border: 1px solid var(--border-strong);
   border-radius: 50%;
   color: white;
-  background: linear-gradient(145deg, var(--accent), #784cff);
+  background: var(--surface);
   font-family: var(--font-display);
   font-weight: 700;
 }
 
 .channel-avatar.clips {
-  background: linear-gradient(145deg, #ff4757, #d61f35);
+  background: var(--surface);
 }
 
 .channel-avatar img {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+.channel-avatar svg {
+  width: 29px;
+  height: auto;
 }
 
 .channel-node > div:nth-child(2) {
@@ -3046,6 +3060,20 @@ input[type="range"]::-moz-range-thumb {
   font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.channel-name-link {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.channel-name-link:hover {
+  color: var(--accent-hover);
 }
 
 .channel-node small {
@@ -3076,6 +3104,73 @@ input[type="range"]::-moz-range-thumb {
   align-items: center;
   gap: 10px;
   margin-top: 3px;
+}
+
+.channel-main-link-form {
+  grid-column: 1 / -1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 7px;
+  margin-top: 4px;
+}
+
+.channel-main-link-form > label {
+  color: var(--text-faint);
+  font-size: 9.5px;
+  font-weight: 700;
+}
+
+.channel-main-link-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.channel-main-link-control input {
+  min-width: 0;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  outline: none;
+  color: var(--text);
+  background: var(--surface);
+  font-size: 10.5px;
+  transition: border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.channel-main-link-control input::placeholder {
+  color: var(--text-faint);
+}
+
+.channel-main-link-control input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.channel-main-link-control input[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+.channel-main-link-control .channel-connect-btn {
+  width: auto;
+  min-width: 68px;
+  padding-inline: 12px;
+}
+
+.channel-main-link-form > small {
+  min-height: 15px;
+}
+
+.channel-main-link-form .channel-link-error {
+  color: var(--danger);
+}
+
+.channel-main-link-form > .channel-disconnect-btn {
+  align-self: flex-start;
+  padding: 2px 0;
 }
 
 .channel-disconnect-btn {
@@ -3616,6 +3711,16 @@ input[type="range"]::-moz-range-thumb {
   .automation-columns { grid-template-columns: 1fr; }
 
   .automation-card { padding: 20px; }
+}
+
+@media (max-width: 420px) {
+  .channel-main-link-control {
+    grid-template-columns: 1fr;
+  }
+
+  .channel-main-link-control .channel-connect-btn {
+    width: 100%;
+  }
 }
 
 @media (max-width: 520px) {

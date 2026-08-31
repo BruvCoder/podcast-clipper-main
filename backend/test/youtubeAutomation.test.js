@@ -16,6 +16,9 @@ const CLIPS_PROFILE_ID = "profile-clips";
 const MAIN_ACCOUNT_ID = "zernio-main-account";
 const CLIPS_ACCOUNT_ID = "zernio-clips-account";
 const SAME_CHANNEL_ACCOUNT_ID = "zernio-same-channel-account";
+const PENDING_MAIN_ACCOUNT_ID = "zernio-pending-main-account";
+const MAIN_CHANNEL_ID = "UC1234567890123456789012";
+const MAIN_CHANNEL_URL = `https://www.youtube.com/channel/${MAIN_CHANNEL_ID}`;
 const BASELINE_VIDEO_ID = "abcdefghijk";
 const NEW_VIDEO_ID = "zyxwvutsrqp";
 const ZERNIO_VIDEO_ID = "zernio00001";
@@ -60,18 +63,14 @@ function externalPost({
   videoId,
   title,
   publishedAt,
-  accountId = MAIN_ACCOUNT_ID,
+  channelId = MAIN_CHANNEL_ID,
 } = {}) {
   return {
-    _id: `external-${videoId}`,
-    accountId,
-    platform: "youtube",
-    source: "external",
-    platformPostId: videoId,
-    platformPostUrl: `https://www.youtube.com/watch?v=${videoId}`,
+    videoId,
+    channelId,
+    url: `https://www.youtube.com/watch?v=${videoId}`,
     title,
-    content: title,
-    publishedAt: new Date(publishedAt).toISOString(),
+    publishedAt,
   };
 }
 
@@ -112,6 +111,8 @@ function createFakeZernio(overrides = {}) {
     createPost: [],
     getPost: [],
     disconnect: [],
+    resolveSource: [],
+    feed: [],
   };
   let externalPosts = [];
   let zernioPosts = [];
@@ -200,6 +201,20 @@ function createFakeZernio(overrides = {}) {
   return {
     api,
     calls,
+    async resolveSourceChannel(url) {
+      calls.resolveSource.push({ url });
+      return {
+        id: MAIN_CHANNEL_ID,
+        title: "Ravi Main",
+        username: "@ravi-main",
+        thumbnailUrl: "https://images.example/ravi-main.jpg",
+        url: MAIN_CHANNEL_URL,
+      };
+    },
+    async fetchSourceFeed(channel) {
+      calls.feed.push({ channelId: channel.id });
+      return structuredClone(externalPosts);
+    },
     setExternalPosts(posts) {
       externalPosts = structuredClone(posts);
     },
@@ -224,6 +239,8 @@ function createService({
     config,
     store,
     zernioApi: zernio.api,
+    resolveSourceChannel: zernio.resolveSourceChannel,
+    fetchSourceFeed: zernio.fetchSourceFeed,
     enqueueJob,
     now,
     onPublicationUpdate,
@@ -250,17 +267,18 @@ async function seedConnectedChannels(store, overrides = {}) {
   await store.update(UID, (record) => {
     Object.assign(record, {
       zernioProfiles: {
-        main: MAIN_PROFILE_ID,
+        main: null,
         clips: CLIPS_PROFILE_ID,
       },
       enabled: false,
       status: "paused",
       sourceChannel: {
-        id: MAIN_ACCOUNT_ID,
+        id: MAIN_CHANNEL_ID,
+        platformIdentity: MAIN_CHANNEL_ID,
         title: "Ravi Main",
         username: "@ravi-main",
-        provider: "zernio",
-        needsReauth: false,
+        url: MAIN_CHANNEL_URL,
+        provider: "public",
       },
       clipsChannel: {
         id: CLIPS_ACCOUNT_ID,
@@ -332,81 +350,293 @@ test("Zernio API key and public callback settings are required", async (t) => {
   const service = createService({ store, zernio, config });
   const status = await service.status(UID);
   assert.equal(status.available, false);
-  assert.equal(status.connectionProvider, "zernio");
+  assert.equal(status.connectionProvider, "zernio-clips");
   await assert.rejects(
-    service.startOauth(UID, "main"),
+    service.startOauth(UID, "clips"),
     (error) => error?.code === "zernio_not_configured" && error?.status === 503
   );
 });
 
-test("separate Zernio profiles connect distinct main and clips YouTube accounts", async (t) => {
+test("a public main-channel link and one clips-channel OAuth connection complete setup", async (t) => {
   const store = await createStore(t);
   const zernio = createFakeZernio();
   const service = createService({ store, zernio });
 
-  const main = await connectRole(service, zernio, "main", MAIN_ACCOUNT_ID);
+  const source = await service.setSourceChannel(UID, "@ravi-main");
   const clips = await connectRole(service, zernio, "clips", CLIPS_ACCOUNT_ID);
 
-  assert.equal(main.role, "main");
-  assert.equal(main.channel.id, MAIN_ACCOUNT_ID);
+  assert.equal(source.sourceChannel.id, MAIN_CHANNEL_ID);
+  assert.equal(source.sourceChannel.provider, "public");
+  assert.equal("accountId" in source.sourceChannel, false);
   assert.equal(clips.role, "clips");
   assert.equal(clips.channel.id, CLIPS_ACCOUNT_ID);
-  assert.equal(zernio.calls.createProfile.length, 2);
-  assert.match(zernio.calls.createProfile[0].name, /^ravi-[0-9a-f]+-main$/);
-  assert.match(zernio.calls.createProfile[1].name, /^ravi-[0-9a-f]+-clips$/);
-  assert.notEqual(zernio.calls.createProfile[0].name, zernio.calls.createProfile[1].name);
+  assert.equal(zernio.calls.createProfile.length, 1);
+  assert.match(zernio.calls.createProfile[0].name, /^ravi-[0-9a-f]+-clips$/);
   assert.match(zernio.calls.createProfile[0].options.idempotencyKey, /^[0-9a-f-]{36}$/);
-  assert.match(zernio.calls.createProfile[1].options.idempotencyKey, /^[0-9a-f-]{36}$/);
-  assert.notEqual(
-    zernio.calls.createProfile[0].options.idempotencyKey,
-    zernio.calls.createProfile[1].options.idempotencyKey
-  );
   assert.deepEqual(
     zernio.calls.connect.map((call) => call.profileId),
-    [MAIN_PROFILE_ID, CLIPS_PROFILE_ID]
+    [CLIPS_PROFILE_ID]
   );
 
   const stored = await store.get(UID);
   assert.deepEqual(stored.zernioProfiles, {
-    main: MAIN_PROFILE_ID,
+    main: null,
     clips: CLIPS_PROFILE_ID,
   });
   assert.equal("zernioProfileId" in stored, false);
-  assert.equal(stored.sourceChannel.id, MAIN_ACCOUNT_ID);
+  assert.equal(stored.sourceChannel.id, MAIN_CHANNEL_ID);
   assert.equal(stored.clipsChannel.id, CLIPS_ACCOUNT_ID);
   assert.equal(stored.enabled, false);
   assert.equal(stored.status, "paused");
 
   const status = await service.status(UID);
-  assert.equal(status.sourceChannel.provider, "zernio");
+  assert.equal(status.sourceChannel.provider, "public");
   assert.equal(status.clipsChannel.provider, "zernio");
-  assert.equal("token" in status.sourceChannel, false);
+  assert.equal("needsReauth" in status.sourceChannel, false);
   assert.equal("apiKey" in status, false);
 });
 
-test("OAuth completion rejects using the same Zernio account for both roles", async (t) => {
+test("OAuth is restricted to the clips channel", async (t) => {
   const store = await createStore(t);
   const zernio = createFakeZernio();
-  const originalFindAccount = zernio.api.findAccountById;
-  zernio.api.findAccountById = async (accountId, options) => {
-    const found = await originalFindAccount(accountId, options);
-    return { ...found, profileId: options.profileId };
-  };
   const service = createService({ store, zernio });
 
-  await connectRole(service, zernio, "main", MAIN_ACCOUNT_ID);
   await assert.rejects(
-    connectRole(service, zernio, "clips", MAIN_ACCOUNT_ID),
-    (error) => error?.code === "same_channel" && error?.status === 409
+    service.startOauth(UID, "main"),
+    (error) => error?.code === "invalid_channel_role" && error?.status === 400
+  );
+  assert.equal(zernio.calls.createProfile.length, 0);
+  assert.equal(zernio.calls.connect.length, 0);
+});
+
+test("an in-flight legacy main OAuth callback disconnects its allocated account", async (t) => {
+  const store = await createStore(t);
+  const zernio = createFakeZernio();
+  const clock = 1_000;
+  const service = createService({ store, zernio, now: () => clock });
+  const state = "legacy-main-oauth-state";
+  await store.createOauthState(state, {
+    uid: UID,
+    role: "main",
+    zernioProfileId: MAIN_PROFILE_ID,
+    createdAt: clock - 100,
+    expiresAt: clock + 10_000,
+  });
+
+  await assert.rejects(
+    service.completeOauth({
+      state,
+      cookieState: state,
+      connected: "youtube",
+      profileId: MAIN_PROFILE_ID,
+      accountId: MAIN_ACCOUNT_ID,
+    }),
+    (error) => error?.code === "invalid_channel_role" && error?.status === 400
+  );
+
+  assert.deepEqual(zernio.calls.disconnect, [{ accountId: MAIN_ACCOUNT_ID }]);
+  assert.equal((await store.get(UID))?.pendingConnectionCleanup?.main ?? null, null);
+  assert.equal(await store.consumeOauthState(state), null);
+});
+
+test("a failed legacy main OAuth cleanup is persisted before returning invalid role", async (t) => {
+  const store = await createStore(t);
+  const zernio = createFakeZernio();
+  zernio.api.disconnectAccount = async (accountId) => {
+    zernio.calls.disconnect.push({ accountId });
+    const error = new Error("Temporary legacy callback cleanup failure");
+    error.status = 503;
+    throw error;
+  };
+  const clock = 2_000;
+  const service = createService({ store, zernio, now: () => clock });
+  const state = "legacy-main-cleanup-failure-state";
+  await store.createOauthState(state, {
+    uid: UID,
+    role: "main",
+    zernioProfileId: MAIN_PROFILE_ID,
+    createdAt: clock - 100,
+    expiresAt: clock + 10_000,
+  });
+
+  await assert.rejects(
+    service.completeOauth({
+      state,
+      cookieState: state,
+      connected: "youtube",
+      profileId: MAIN_PROFILE_ID,
+      accountId: MAIN_ACCOUNT_ID,
+    }),
+    (error) => error?.code === "invalid_channel_role" && error?.status === 400
   );
 
   const stored = await store.get(UID);
-  assert.equal(stored.sourceChannel.id, MAIN_ACCOUNT_ID);
-  assert.equal(stored.clipsChannel, null);
+  assert.deepEqual(stored.pendingConnectionCleanup.main, {
+    accountId: MAIN_ACCOUNT_ID,
+    profileId: MAIN_PROFILE_ID,
+    createdAt: clock,
+  });
   assert.equal(stored.enabled, false);
+  assert.equal(stored.status, "error");
+  assert.match(stored.lastError, /finish resetting the main channel/i);
 });
 
-test("OAuth completion rejects distinct Zernio accounts for the same YouTube channel", async (t) => {
+test("setting a public source removes missing-provider legacy and pending main accounts", async (t) => {
+  const store = await createStore(t);
+  await store.update(UID, (record) => {
+    record.sourceChannel = {
+      id: MAIN_ACCOUNT_ID,
+      title: "Legacy Ravi Main",
+      username: "@ravi-main",
+    };
+    record.pendingConnectionCleanup = {
+      main: {
+        accountId: PENDING_MAIN_ACCOUNT_ID,
+        profileId: MAIN_PROFILE_ID,
+        createdAt: 500,
+      },
+      clips: null,
+    };
+    record.status = "error";
+    record.lastError = "Ravi needs to finish resetting the main channel connection.";
+    return record;
+  });
+  const zernio = createFakeZernio();
+  const service = createService({ store, zernio });
+
+  const status = await service.setSourceChannel(UID, MAIN_CHANNEL_URL);
+
+  assert.deepEqual(zernio.calls.disconnect, [
+    { accountId: PENDING_MAIN_ACCOUNT_ID },
+    { accountId: MAIN_ACCOUNT_ID },
+  ]);
+  const stored = await store.get(UID);
+  assert.equal(stored.pendingConnectionCleanup.main, null);
+  assert.equal(stored.sourceChannel.id, MAIN_CHANNEL_ID);
+  assert.equal(stored.sourceChannel.provider, "public");
+  assert.equal(status.sourceChannel.provider, "public");
+});
+
+test("setting a public source removes an explicit legacy Zernio main account", async (t) => {
+  const store = await createStore(t);
+  await store.update(UID, (record) => {
+    record.sourceChannel = {
+      id: MAIN_ACCOUNT_ID,
+      title: "Legacy Ravi Main",
+      username: "@ravi-main",
+      provider: "zernio",
+    };
+    return record;
+  });
+  const zernio = createFakeZernio();
+  const service = createService({ store, zernio });
+
+  const status = await service.setSourceChannel(UID, MAIN_CHANNEL_URL);
+
+  assert.deepEqual(zernio.calls.disconnect, [{ accountId: MAIN_ACCOUNT_ID }]);
+  assert.equal((await store.get(UID)).sourceChannel.provider, "public");
+  assert.equal(status.sourceChannel.id, MAIN_CHANNEL_ID);
+});
+
+test("a failed pending main cleanup leaves the legacy source intact for retry", async (t) => {
+  const store = await createStore(t);
+  await store.update(UID, (record) => {
+    record.sourceChannel = {
+      id: MAIN_ACCOUNT_ID,
+      title: "Legacy Ravi Main",
+      username: "@ravi-main",
+    };
+    record.pendingConnectionCleanup = {
+      main: {
+        accountId: PENDING_MAIN_ACCOUNT_ID,
+        profileId: MAIN_PROFILE_ID,
+        createdAt: 500,
+      },
+      clips: null,
+    };
+    return record;
+  });
+  const zernio = createFakeZernio();
+  let attempts = 0;
+  zernio.api.disconnectAccount = async (accountId) => {
+    zernio.calls.disconnect.push({ accountId });
+    attempts += 1;
+    if (attempts === 1) {
+      const error = new Error("Temporary pending main cleanup failure");
+      error.status = 503;
+      throw error;
+    }
+    return { message: "disconnected" };
+  };
+  const service = createService({ store, zernio });
+
+  await assert.rejects(
+    service.setSourceChannel(UID, MAIN_CHANNEL_URL),
+    (error) => error?.code === "zernio_cleanup_pending" && error?.status === 503
+  );
+  let stored = await store.get(UID);
+  assert.equal(stored.sourceChannel.id, MAIN_ACCOUNT_ID);
+  assert.equal(stored.sourceChannel.provider, undefined);
+  assert.equal(stored.pendingConnectionCleanup.main.accountId, PENDING_MAIN_ACCOUNT_ID);
+
+  const status = await service.setSourceChannel(UID, MAIN_CHANNEL_URL);
+  stored = await store.get(UID);
+  assert.equal(status.sourceChannel.id, MAIN_CHANNEL_ID);
+  assert.equal(stored.pendingConnectionCleanup.main, null);
+  assert.equal(stored.sourceChannel.provider, "public");
+  assert.deepEqual(zernio.calls.disconnect, [
+    { accountId: PENDING_MAIN_ACCOUNT_ID },
+    { accountId: PENDING_MAIN_ACCOUNT_ID },
+    { accountId: MAIN_ACCOUNT_ID },
+  ]);
+});
+
+test("changing the public main-channel link pauses Ravi and resets the source ledger", async (t) => {
+  const store = await createStore(t);
+  const zernio = createFakeZernio();
+  let resolved = {
+    id: MAIN_CHANNEL_ID,
+    title: "Ravi Main",
+    username: "@ravi-main",
+    url: MAIN_CHANNEL_URL,
+  };
+  zernio.resolveSourceChannel = async (url) => {
+    zernio.calls.resolveSource.push({ url });
+    return structuredClone(resolved);
+  };
+  const service = createService({ store, zernio });
+  await service.setSourceChannel(UID, MAIN_CHANNEL_URL);
+  await store.update(UID, (record) => {
+    record.enabled = true;
+    record.status = "watching";
+    record.enabledAt = 100;
+    record.lastCheckedAt = 200;
+    record.lastDetectedVideo = { id: NEW_VIDEO_ID };
+    record.events = { [NEW_VIDEO_ID]: { status: "processing" } };
+    return record;
+  });
+
+  const nextChannelId = "UCabcdefghijklmnopqrstuv";
+  resolved = {
+    id: nextChannelId,
+    title: "Ravi Main Two",
+    username: "@ravi-main-two",
+    url: `https://www.youtube.com/channel/${nextChannelId}`,
+  };
+  const status = await service.setSourceChannel(UID, "@ravi-main-two");
+
+  const stored = await store.get(UID);
+  assert.equal(status.sourceChannel.id, nextChannelId);
+  assert.equal(stored.enabled, false);
+  assert.equal(stored.status, "setup");
+  assert.equal(stored.enabledAt, null);
+  assert.equal(stored.lastCheckedAt, null);
+  assert.equal(stored.lastDetectedVideo, null);
+  assert.deepEqual(stored.events, {});
+  assert.deepEqual(zernio.calls.disconnect, []);
+});
+
+test("clips OAuth rejects the same underlying YouTube channel as the public source", async (t) => {
   const store = await createStore(t);
   const zernio = createFakeZernio();
   const originalFindAccount = zernio.api.findAccountById;
@@ -416,21 +646,22 @@ test("OAuth completion rejects distinct Zernio accounts for the same YouTube cha
         profileId: options.profileId,
         username: "@ravi-main",
         displayName: "Ravi Main (second connection)",
-        profileUrl: "https://www.youtube.com/@ravi-main/",
+        profileUrl: MAIN_CHANNEL_URL,
+        metadata: { channelId: MAIN_CHANNEL_ID },
       });
     }
     return originalFindAccount(accountId, options);
   };
   const service = createService({ store, zernio });
 
-  await connectRole(service, zernio, "main", MAIN_ACCOUNT_ID);
+  await service.setSourceChannel(UID, MAIN_CHANNEL_URL);
   await assert.rejects(
     connectRole(service, zernio, "clips", SAME_CHANNEL_ACCOUNT_ID),
     (error) => error?.code === "same_channel" && error?.status === 409
   );
 
   const stored = await store.get(UID);
-  assert.equal(stored.sourceChannel.id, MAIN_ACCOUNT_ID);
+  assert.equal(stored.sourceChannel.id, MAIN_CHANNEL_ID);
   assert.equal(stored.clipsChannel, null);
   assert.equal(stored.enabled, false);
 });
@@ -445,13 +676,14 @@ test("a failed rejected-account cleanup is persisted and retried before reconnec
         profileId: options.profileId,
         username: "@ravi-main",
         displayName: "Ravi Main (rejected duplicate)",
-        profileUrl: "https://www.youtube.com/@ravi-main/",
+        profileUrl: MAIN_CHANNEL_URL,
+        metadata: { channelId: MAIN_CHANNEL_ID },
       });
     }
     return originalFindAccount(accountId, options);
   };
   const service = createService({ store, zernio });
-  await connectRole(service, zernio, "main", MAIN_ACCOUNT_ID);
+  await service.setSourceChannel(UID, MAIN_CHANNEL_URL);
 
   const sequence = [];
   const originalGetConnectUrl = zernio.api.getConnectUrl;
@@ -481,7 +713,7 @@ test("a failed rejected-account cleanup is persisted and retried before reconnec
 
   let stored = await store.get(UID);
   assert.equal(stored.clipsChannel, null);
-  assert.equal(stored.sourceChannel.id, MAIN_ACCOUNT_ID);
+  assert.equal(stored.sourceChannel.id, MAIN_CHANNEL_ID);
   assert.deepEqual(
     {
       accountId: stored.pendingConnectionCleanup.clips.accountId,
@@ -615,7 +847,7 @@ test("enabling baselines existing posts and enqueues each later external post on
   assert.equal(stored.lastDetectedVideo.id, NEW_VIDEO_ID);
 });
 
-test("polling detects both native and Zernio-authored main-channel uploads", async (t) => {
+test("polling detects every new upload returned by the public main-channel feed", async (t) => {
   const store = await createStore(t);
   const baseTime = Date.parse("2026-08-30T12:00:00Z");
   await seedConnectedChannels(store, {
@@ -624,16 +856,18 @@ test("polling detects both native and Zernio-authored main-channel uploads", asy
     enabledAt: baseTime,
   });
   const zernio = createFakeZernio();
-  zernio.setExternalPosts([externalPost({
-    videoId: NEW_VIDEO_ID,
-    title: "A native YouTube upload",
-    publishedAt: baseTime + 1_000,
-  })]);
-  zernio.setZernioPosts([zernioAuthoredPost({
-    videoId: ZERNIO_VIDEO_ID,
-    title: "An upload published through Zernio",
-    publishedAt: baseTime + 2_000,
-  })]);
+  zernio.setExternalPosts([
+    externalPost({
+      videoId: NEW_VIDEO_ID,
+      title: "A native YouTube upload",
+      publishedAt: baseTime + 1_000,
+    }),
+    externalPost({
+      videoId: ZERNIO_VIDEO_ID,
+      title: "Another public channel upload",
+      publishedAt: baseTime + 2_000,
+    }),
+  ]);
   const enqueued = [];
   const service = createService({
     store,
@@ -657,19 +891,11 @@ test("polling detects both native and Zernio-authored main-channel uploads", asy
   );
   assert.equal(
     enqueued.find((payload) => payload.sourceVideoId === ZERNIO_VIDEO_ID)?.sourceTitle,
-    "An upload published through Zernio"
+    "Another public channel upload"
   );
-  assert.deepEqual(
-    zernio.calls.listPosts.map((call) => ({
-      accountId: call.accountId,
-      source: call.options.source,
-      status: call.options.status,
-    })),
-    [
-      { accountId: MAIN_ACCOUNT_ID, source: "external", status: undefined },
-      { accountId: MAIN_ACCOUNT_ID, source: "zernio", status: "published" },
-    ]
-  );
+  assert.deepEqual(zernio.calls.feed, [{ channelId: MAIN_CHANNEL_ID }]);
+  assert.equal(zernio.calls.sync.length, 0);
+  assert.equal(zernio.calls.listPosts.length, 0);
 });
 
 test("an upload at the activation cutoff is not baselined and is queued on the next poll", async (t) => {
@@ -774,7 +1000,7 @@ test("a detected upload keeps its snapshotted YouTube publication settings", asy
   assert.equal(zernio.calls.createPost[0].madeForKids, false);
 });
 
-test("a revoked live sync is not masked by successful cached post listings", async (t) => {
+test("a public-feed failure is retryable without disabling Ravi or asking for reauthorization", async (t) => {
   const store = await createStore(t);
   const baseTime = Date.parse("2026-08-30T12:00:00Z");
   await seedConnectedChannels(store, {
@@ -783,21 +1009,11 @@ test("a revoked live sync is not masked by successful cached post listings", asy
     enabledAt: baseTime,
   });
   const zernio = createFakeZernio();
-  zernio.setExternalPosts([externalPost({
-    videoId: NEW_VIDEO_ID,
-    title: "A cached native post",
-    publishedAt: baseTime + 1_000,
-  })]);
-  zernio.setZernioPosts([zernioAuthoredPost({
-    videoId: ZERNIO_VIDEO_ID,
-    title: "A cached Zernio-authored post",
-    publishedAt: baseTime + 2_000,
-  })]);
-  zernio.api.syncExternalPosts = async (accountId) => {
-    zernio.calls.sync.push({ accountId });
-    const error = new Error("The YouTube account was disconnected");
-    error.status = 401;
-    error.code = "ACCOUNT_DISCONNECTED";
+  zernio.fetchSourceFeed = async (channel) => {
+    zernio.calls.feed.push({ channelId: channel.id });
+    const error = new Error("The public YouTube feed is temporarily unavailable");
+    error.status = 503;
+    error.code = "youtube_feed_unavailable";
     throw error;
   };
   const enqueued = [];
@@ -814,16 +1030,16 @@ test("a revoked live sync is not masked by successful cached post listings", asy
   await service.pollUser(UID, { force: true });
 
   const stored = await store.get(UID);
-  assert.equal(stored.enabled, false);
-  assert.equal(stored.status, "reauth_required");
-  assert.equal(stored.sourceChannel.needsReauth, true);
+  assert.equal(stored.enabled, true);
+  assert.equal(stored.status, "error");
+  assert.equal(stored.sourceChannel.needsReauth, undefined);
   assert.equal(stored.clipsChannel.needsReauth, false);
-  assert.match(stored.lastError, /Reconnect the main channel/i);
+  assert.match(stored.lastError, /try again automatically/i);
   assert.equal(enqueued.length, 0);
-  assert.deepEqual(zernio.calls.sync, [{ accountId: MAIN_ACCOUNT_ID }]);
+  assert.deepEqual(zernio.calls.feed, [{ channelId: MAIN_CHANNEL_ID }]);
 });
 
-test("a failed Zernio disconnect preserves the local channel and automation state", async (t) => {
+test("removing a public main-channel link clears watcher state without calling Zernio", async (t) => {
   const store = await createStore(t);
   await seedConnectedChannels(store, {
     enabled: true,
@@ -837,25 +1053,18 @@ test("a failed Zernio disconnect preserves the local channel and automation stat
       },
     },
   });
-  const before = await store.get(UID);
   const zernio = createFakeZernio();
-  zernio.api.disconnectAccount = async (accountId) => {
-    zernio.calls.disconnect.push({ accountId });
-    const error = new Error("Zernio disconnect failed");
-    error.status = 503;
-    error.retryable = true;
-    throw error;
-  };
   const service = createService({ store, zernio });
 
-  await assert.rejects(service.disconnect(UID, "main"), /Zernio disconnect failed/);
+  const status = await service.disconnect(UID, "main");
 
   const after = await store.get(UID);
-  assert.deepEqual(after, before);
-  assert.deepEqual(zernio.calls.disconnect, [{ accountId: MAIN_ACCOUNT_ID }]);
-  assert.equal(after.sourceChannel.id, MAIN_ACCOUNT_ID);
-  assert.equal(after.enabled, true);
-  assert.equal(after.events[NEW_VIDEO_ID].jobId, "job-in-flight");
+  assert.deepEqual(zernio.calls.disconnect, []);
+  assert.equal(after.sourceChannel, null);
+  assert.equal(after.enabled, false);
+  assert.deepEqual(after.events, {});
+  assert.equal(after.lastCheckedAt, null);
+  assert.equal(status.sourceChannel, null);
 });
 
 test("publishing uploads media through Zernio and reconciles the YouTube link", async (t) => {

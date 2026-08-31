@@ -1,6 +1,8 @@
 import path from "node:path";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createZernioApi, ZernioApiError } from "./zernioApi.js";
+import { resolveYoutubeChannel } from "./ytdlp.js";
+import { fetchYoutubeChannelFeed } from "./youtubeChannelFeed.js";
 
 const DEFAULT_SETTINGS = Object.freeze({
   numClips: 3,
@@ -16,7 +18,8 @@ const DEFAULT_CERTIFICATIONS = Object.freeze({
   acceptsCommunityGuidelines: false,
 });
 
-const CONNECTION_ROLES = new Set(["main", "clips"]);
+const CONNECTION_ROLES = new Set(["clips"]);
+const CHANNEL_ROLES = new Set(["main", "clips"]);
 const MAX_AUTOMATION_ATTEMPTS = 3;
 const MAX_STORED_EVENTS = 250;
 
@@ -76,7 +79,7 @@ export function loadYoutubeAutomationConfig(env = process.env, { stateDir } = {}
 function defaultRecord(uid) {
   return {
     uid,
-    version: 3,
+    version: 4,
     zernioProfiles: {
       main: null,
       clips: null,
@@ -125,7 +128,7 @@ function withDefaults(record, uid) {
   return {
     ...base,
     ...persisted,
-    version: 3,
+    version: 4,
     zernioProfiles,
     pendingConnectionCleanup: {
       ...base.pendingConnectionCleanup,
@@ -174,17 +177,21 @@ function cleanMessage(error, fallback = "Ravi's channel connection needs attenti
 
 function publicChannel(channel) {
   if (!channel) return null;
-  return {
+  const provider = channel.provider === "public" ? "public" : "zernio";
+  const result = {
     id: channel.id,
-    accountId: channel.id,
     title: channel.title,
     username: channel.username || null,
     thumbnailUrl: channel.thumbnailUrl || null,
     url: channel.url || null,
     connectedAt: channel.connectedAt || null,
-    needsReauth: Boolean(channel.needsReauth),
-    provider: "zernio",
+    provider,
   };
+  if (provider === "zernio") {
+    result.accountId = channel.id;
+    result.needsReauth = Boolean(channel.needsReauth);
+  }
+  return result;
 }
 
 function publicStatus(record, config) {
@@ -192,7 +199,7 @@ function publicStatus(record, config) {
   return {
     available: config.configured,
     configured: config.configured,
-    connectionProvider: "zernio",
+    connectionProvider: "zernio-clips",
     missing: config.missing,
     enabled: Boolean(current.enabled),
     status: current.status,
@@ -330,37 +337,6 @@ function channelFromAccount(account, role, connectedAt, health = null) {
   };
 }
 
-function normalizeChannelPost(post, sourceAccountId) {
-  if (!post || (post.platform && post.platform !== "youtube")) return null;
-  const youtubeTarget = (Array.isArray(post.platforms) ? post.platforms : []).find((target) => {
-    const targetAccountId = String(target?.accountId?._id || target?.accountId?.id || target?.accountId || "");
-    return target?.platform === "youtube" && (!targetAccountId || targetAccountId === sourceAccountId);
-  });
-  if (Array.isArray(post.platforms) && post.platforms.length > 0 && !youtubeTarget) return null;
-  const videoId = String(
-    youtubeTarget?.platformPostId || post.platformPostId || post.videoId || ""
-  ).trim();
-  if (!/^[A-Za-z0-9_-]{11}$/.test(videoId)) return null;
-  const publishedAt = Date.parse(
-    youtubeTarget?.publishedAt || post.publishedAt || post.scheduledFor || post.createdAt || ""
-  );
-  if (!Number.isFinite(publishedAt)) return null;
-  const content = String(post.title || post.content || "").trim();
-  const title = String(post.title || content.split(/\r?\n/)[0] || "New YouTube upload")
-    .trim()
-    .slice(0, 180);
-  return {
-    videoId,
-    channelId: sourceAccountId,
-    title,
-    publishedAt,
-    url:
-      youtubeTarget?.platformPostUrl ||
-      post.platformPostUrl ||
-      `https://www.youtube.com/watch?v=${videoId}`,
-  };
-}
-
 function retryDelay(attempts) {
   return Math.min(15 * 60_000, 60_000 * (2 ** Math.max(0, attempts - 1)));
 }
@@ -390,6 +366,8 @@ export function createYoutubeAutomationService({
   store,
   enqueueJob,
   zernioApi,
+  resolveSourceChannel = resolveYoutubeChannel,
+  fetchSourceFeed,
   fetchImpl = fetch,
   logger = console,
   now = () => Date.now(),
@@ -406,6 +384,11 @@ export function createYoutubeAutomationService({
         fetchImpl,
       })
     : null);
+  const readSourceFeed = fetchSourceFeed || ((channel) =>
+    fetchYoutubeChannelFeed(channel.id, {
+      fetchImpl,
+      timeoutMs: config.requestTimeoutMs,
+    }));
   const workerId = randomBytes(16).toString("base64url");
   const polls = new Map();
   let pollAllPromise = null;
@@ -523,7 +506,7 @@ export function createYoutubeAutomationService({
   async function startOauth(uid, role = "clips") {
     requireConfigured();
     if (!CONNECTION_ROLES.has(role)) {
-      throw new YoutubeAutomationError("Choose whether to connect the main or clips channel.", {
+      throw new YoutubeAutomationError("Only the clips channel needs to be connected.", {
         status: 400,
         code: "invalid_channel_role",
       });
@@ -580,8 +563,30 @@ export function createYoutubeAutomationService({
         code: "zernio_oauth_denied",
       });
     }
-    if (!CONNECTION_ROLES.has(pending.role)) {
-      throw new YoutubeAutomationError("This channel connection has an invalid role.", {
+    if (pending.role !== "clips") {
+      // A main-channel OAuth flow may have been started before the clips-only
+      // rollout and completed after it. Zernio has already allocated the
+      // account by the time this callback arrives, so release the allocation
+      // only when its callback profile matches the stored legacy flow. If Zernio is
+      // temporarily unavailable, cleanupRejectedConnection records the exact
+      // account for a later retry.
+      if (
+        pending.role === "main" &&
+        connectedAccountId &&
+        profileId === pending.zernioProfileId
+      ) {
+        try {
+          await cleanupRejectedConnection(
+            pending.uid,
+            pending.role,
+            pending.zernioProfileId,
+            connectedAccountId
+          );
+        } catch (error) {
+          if (error?.code !== "zernio_cleanup_pending") throw error;
+        }
+      }
+      throw new YoutubeAutomationError("This clips-channel connection has an invalid role.", {
         status: 400,
         code: "invalid_channel_role",
       });
@@ -629,29 +634,22 @@ export function createYoutubeAutomationService({
             code: "zernio_profile_mismatch",
           });
         }
-        const otherRole = pending.role === "main" ? "clipsChannel" : "sourceChannel";
-        if (sameYoutubeChannel(value[otherRole], channel)) {
-          shouldCleanupRejectedConnection = value[otherRole]?.id !== channel.id;
+        if (sameYoutubeChannel(value.sourceChannel, channel)) {
+          shouldCleanupRejectedConnection = value.sourceChannel?.id !== channel.id;
           throw new YoutubeAutomationError(
             "The main and clips channels must be different so Ravi cannot clip its own posts.",
             { status: 409, code: "same_channel" }
           );
         }
-        const key = pending.role === "main" ? "sourceChannel" : "clipsChannel";
-        previous = value[key];
-        value[key] = channel;
+        previous = value.clipsChannel;
+        value.clipsChannel = channel;
         value.enabled = false;
         value.status = value.sourceChannel && value.clipsChannel ? "paused" : "setup";
         value.lastError = null;
-        if (pending.role === "main" && previous?.id !== channel.id) {
-          value.events = {};
-          value.lastDetectedVideo = null;
-          value.lastCheckedAt = null;
-        }
         addActivity(value, {
           type: "connection",
           status: "success",
-          message: `Connected ${pending.role} channel through Zernio: ${channel.title}`,
+          message: `Connected clips channel: ${channel.title}`,
         }, now());
         return value;
       });
@@ -680,36 +678,107 @@ export function createYoutubeAutomationService({
   }
 
   async function fetchSourceEntries(record) {
-    const sourceId = record.sourceChannel?.id;
-    if (!sourceId) return [];
-    const rawPosts = [];
-    // All three reads are required. In particular, a cached Zernio-authored
-    // post list must never hide a failed live external sync (including a
-    // revoked main-channel connection).
-    const synced = await zernio.syncExternalPosts(sourceId);
-    rawPosts.push(...(Array.isArray(synced?.posts) ? synced.posts : []));
-    if (synced?.post) rawPosts.push(synced.post);
-
-    const external = await zernio.listYoutubePosts(sourceId, {
-      source: "external",
-      page: 1,
-      limit: 100,
-    });
-    rawPosts.push(...(Array.isArray(external?.posts) ? external.posts : []));
-
-    const authored = await zernio.listYoutubePosts(sourceId, {
-      source: "zernio",
-      status: "published",
-      page: 1,
-      limit: 100,
-    });
-    rawPosts.push(...(Array.isArray(authored?.posts) ? authored.posts : []));
+    const source = record.sourceChannel;
+    if (!source?.id) return [];
+    if (source.provider !== "public") {
+      throw new YoutubeAutomationError("Add your main channel link before Ravi starts watching.", {
+        status: 409,
+        code: "source_link_required",
+      });
+    }
+    const rawEntries = await readSourceFeed(source);
     const entries = new Map();
-    for (const post of rawPosts) {
-      const entry = normalizeChannelPost(post, sourceId);
-      if (entry) entries.set(entry.videoId, entry);
+    for (const entry of Array.isArray(rawEntries) ? rawEntries : []) {
+      if (!entry || entry.channelId !== source.id) continue;
+      if (!/^[A-Za-z0-9_-]{11}$/.test(String(entry.videoId || ""))) continue;
+      if (!Number.isFinite(entry.publishedAt)) continue;
+      entries.set(entry.videoId, {
+        videoId: entry.videoId,
+        channelId: source.id,
+        title: String(entry.title || "New YouTube upload").trim().slice(0, 180),
+        publishedAt: entry.publishedAt,
+        url: entry.url || `https://www.youtube.com/watch?v=${entry.videoId}`,
+      });
     }
     return [...entries.values()].sort((left, right) => left.publishedAt - right.publishedAt);
+  }
+
+  async function setSourceChannel(uid, url) {
+    requireConfigured();
+    let resolved;
+    try {
+      resolved = await resolveSourceChannel(url);
+    } catch (error) {
+      if (error instanceof YoutubeAutomationError) throw error;
+      const invalidInput = error?.code === "ERR_YTDLP_CHANNEL_URL";
+      throw new YoutubeAutomationError(
+        invalidInput
+          ? "Enter a valid public YouTube channel link or @handle."
+          : "Ravi could not verify that YouTube channel right now. Try again.",
+        {
+          status: invalidInput ? 422 : 502,
+          code: invalidInput ? "invalid_source_channel" : "source_channel_lookup_failed",
+          cause: error,
+        }
+      );
+    }
+
+    // Older records may still have a rejected main-channel connection waiting
+    // for removal. Resolve that allocation before replacing the local source;
+    // the retry marker remains intact if the upstream disconnect fails.
+    await retryPendingConnectionCleanup(uid, "main");
+
+    const channel = {
+      id: resolved.id,
+      platformIdentity: resolved.id,
+      title: resolved.title || resolved.username || "YouTube channel",
+      username: resolved.username || null,
+      thumbnailUrl: resolved.thumbnailUrl || null,
+      url: resolved.url,
+      connectedAt: now(),
+      provider: "public",
+    };
+
+    const next = await store.update(uid, async (value) => {
+      value = withDefaults(value, uid);
+      if (sameYoutubeChannel(value.clipsChannel, channel)) {
+        throw new YoutubeAutomationError(
+          "Your main and clips channels must be different.",
+          { status: 409, code: "same_channel" }
+        );
+      }
+
+      const previous = value.sourceChannel;
+      const changed = previous?.provider !== "public" || previous?.id !== channel.id;
+      // A missing provider identifies a pre-v4 Zernio-backed source. Treat it
+      // exactly like an explicit legacy provider so its account allocation is
+      // not orphaned when the public channel link replaces it.
+      if (changed && previous?.provider !== "public" && previous?.id) {
+        try {
+          await zernio.disconnectAccount(previous.id);
+        } catch (error) {
+          if (error?.status !== 404) throw error;
+        }
+      }
+
+      value.sourceChannel = channel;
+      value.lastError = null;
+      if (changed) {
+        value.enabled = false;
+        value.status = value.clipsChannel ? "paused" : "setup";
+        value.enabledAt = null;
+        value.events = {};
+        value.lastDetectedVideo = null;
+        value.lastCheckedAt = null;
+        addActivity(value, {
+          type: "connection",
+          status: "success",
+          message: `Added main channel: ${channel.title}`,
+        }, now());
+      }
+      return value;
+    });
+    return publicStatus(next, config);
   }
 
   async function update(uid, payload = {}) {
@@ -719,8 +788,8 @@ export function createYoutubeAutomationService({
     const certifications = sanitizeCertifications(payload.certifications, current.certifications);
     const requestedEnabled = payload.enabled === undefined ? current.enabled : payload.enabled === true;
     if (requestedEnabled) {
-      if (!current.sourceChannel) {
-        throw new YoutubeAutomationError("Connect the main channel Ravi should watch.", {
+      if (!current.sourceChannel || current.sourceChannel.provider !== "public") {
+        throw new YoutubeAutomationError("Add the main channel link Ravi should watch.", {
           status: 409,
           code: "source_channel_required",
         });
@@ -731,8 +800,8 @@ export function createYoutubeAutomationService({
           code: "clips_channel_required",
         });
       }
-      if (!current.zernioProfiles.main || !current.zernioProfiles.clips) {
-        throw new YoutubeAutomationError("Reconnect both YouTube channels through Zernio before turning Ravi on.", {
+      if (!current.zernioProfiles.clips) {
+        throw new YoutubeAutomationError("Reconnect your clips channel before turning Ravi on.", {
           status: 409,
           code: "zernio_profile_required",
         });
@@ -743,8 +812,8 @@ export function createYoutubeAutomationService({
           code: "same_channel",
         });
       }
-      if (current.sourceChannel.needsReauth || current.clipsChannel.needsReauth) {
-        throw new YoutubeAutomationError("Reconnect both YouTube channels before turning Ravi on.", {
+      if (current.clipsChannel.needsReauth) {
+        throw new YoutubeAutomationError("Reconnect your clips channel before turning Ravi on.", {
           status: 409,
           code: "zernio_reauth_required",
         });
@@ -766,7 +835,6 @@ export function createYoutubeAutomationService({
         const setupChanged =
           value.sourceChannel?.id !== current.sourceChannel?.id ||
           value.clipsChannel?.id !== current.clipsChannel?.id ||
-          value.zernioProfiles.main !== current.zernioProfiles.main ||
           value.zernioProfiles.clips !== current.zernioProfiles.clips;
         if (setupChanged || sameYoutubeChannel(value.sourceChannel, value.clipsChannel)) {
           throw new YoutubeAutomationError("The channel setup changed. Review both channels and try again.", {
@@ -943,14 +1011,8 @@ export function createYoutubeAutomationService({
       await store.update(uid, (value) => {
         value = withDefaults(value, uid);
         value.lastCheckedAt = now();
-        value.status = connectionWasRevoked(error) ? "reauth_required" : "error";
-        value.lastError = connectionWasRevoked(error)
-          ? "Reconnect the main channel through Zernio."
-          : "Ravi could not check the main channel. It will try again automatically.";
-        if (connectionWasRevoked(error) && value.sourceChannel) {
-          value.sourceChannel.needsReauth = true;
-          value.enabled = false;
-        }
+        value.status = "error";
+        value.lastError = "Ravi could not check the main channel. It will try again automatically.";
         return value;
       });
     }
@@ -1382,7 +1444,7 @@ export function createYoutubeAutomationService({
 
   async function disconnect(uid, role) {
     requireConfigured();
-    if (!CONNECTION_ROLES.has(role)) {
+    if (!CHANNEL_ROLES.has(role)) {
       throw new YoutubeAutomationError("Choose the main or clips channel to disconnect.", {
         status: 400,
         code: "invalid_channel_role",
@@ -1393,7 +1455,10 @@ export function createYoutubeAutomationService({
       value = withDefaults(value, uid);
       const removed = value[key];
       const pending = value.pendingConnectionCleanup[role];
-      const accountIds = [...new Set([removed?.id, pending?.accountId].filter(Boolean))];
+      const accountIds = [...new Set([
+        removed?.provider === "public" ? null : removed?.id,
+        pending?.accountId,
+      ].filter(Boolean))];
       for (const accountIdToRemove of accountIds) {
         try {
           await zernio.disconnectAccount(accountIdToRemove);
@@ -1407,6 +1472,7 @@ export function createYoutubeAutomationService({
       value.status = "setup";
       value.lastError = null;
       if (role === "main") {
+        value.enabledAt = null;
         value.events = {};
         value.lastDetectedVideo = null;
         value.lastCheckedAt = null;
@@ -1444,7 +1510,7 @@ export function createYoutubeAutomationService({
   function oauthSuccessRedirect(role) {
     const url = new URL(config.appUrl);
     url.searchParams.set("youtube", "connected");
-    if (CONNECTION_ROLES.has(role)) url.searchParams.set("role", role);
+    if (role === "clips") url.searchParams.set("role", role);
     return url.toString();
   }
 
@@ -1460,6 +1526,7 @@ export function createYoutubeAutomationService({
     status,
     startOauth,
     completeOauth,
+    setSourceChannel,
     update,
     disconnect,
     pollUser,

@@ -13,6 +13,7 @@ import {
   getJob,
   getYoutubeAutomation,
   listJobs,
+  setYoutubeSourceChannel,
   startYoutubeOAuth,
   updateYoutubeAutomation,
 } from "./api.js";
@@ -140,19 +141,14 @@ export default function App() {
         setAutomation(automationData);
 
         if (returned?.status === "connected") {
-          const roleLabel = returned.role === "main" ? "main" : returned.role === "clips" ? "clips" : "YouTube";
-          setAutomationNotice(`Your ${roleLabel} channel is securely connected through Zernio.`);
+          setAutomationNotice("Your clips channel is connected.");
         } else if (returned?.status === "error") {
-          setAutomationError(returned.message || "Zernio could not connect that channel. Please try again.");
+          setAutomationError(returned.message || "Your clips channel could not be connected. Please try again.");
         }
         if (returned) clearOauthReturn();
 
         const shouldConnect = consumeConnectIntent();
-        const nextConnectionRole = !automationData?.sourceChannel
-          ? "main"
-          : !automationData?.clipsChannel
-          ? "clips"
-          : null;
+        const nextConnectionRole = !automationData?.clipsChannel ? "clips" : null;
         if (shouldConnect && automationData?.available !== false && nextConnectionRole && !connectStartedRef.current) {
           connectStartedRef.current = true;
           setAutomationAction(`connecting-${nextConnectionRole}`);
@@ -278,6 +274,21 @@ export default function App() {
     }
   }
 
+  async function handleSetSourceYoutube(url) {
+    setAutomationAction("saving-source");
+    setAutomationError(null);
+    setAutomationNotice(null);
+    try {
+      const data = await setYoutubeSourceChannel(url);
+      setAutomation(data);
+      setAutomationNotice("Ravi is ready to watch your main channel.");
+    } catch (error) {
+      setAutomationError(error.message);
+    } finally {
+      setAutomationAction(null);
+    }
+  }
+
   async function handleUpdateAutomation(updates) {
     const wasEnabled = Boolean(automation?.enabled);
     setAutomationAction("saving");
@@ -323,7 +334,11 @@ export default function App() {
     try {
       const data = await disconnectYoutube(role);
       setAutomation(data);
-      setAutomationNotice(`Your ${role} channel was disconnected and Ravi was paused.`);
+      setAutomationNotice(
+        role === "main"
+          ? "Your main channel link was removed and Ravi was paused."
+          : "Your clips channel was disconnected and Ravi was paused.",
+      );
     } catch (error) {
       setAutomationError(error.message);
     } finally {
@@ -385,6 +400,7 @@ export default function App() {
                   notice={automationNotice}
                   action={automationAction}
                   onConnect={handleConnectYoutube}
+                  onSetSource={handleSetSourceYoutube}
                   onUpdate={handleUpdateAutomation}
                   onCheckNow={handleCheckNow}
                   onDisconnect={handleDisconnectYoutube}

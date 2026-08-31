@@ -80,9 +80,20 @@ export async function startYoutubeOAuth(role) {
     credentials: "include",
     body: JSON.stringify({ role }),
   });
-  const data = await readJsonResponse(res, `Failed to connect your ${role} channel through Zernio`);
-  if (!data.url) throw new Error("Zernio did not return a connection URL");
+  const data = await readJsonResponse(res, `Failed to connect your ${role} channel`);
+  if (!data.url) throw new Error("The channel connection did not return a URL");
   return data.url;
+}
+
+export async function setYoutubeSourceChannel(url) {
+  const res = await fetch(`${API_BASE_URL}/api/youtube/source-channel`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+    credentials: "include",
+    body: JSON.stringify({ url }),
+  });
+  const data = await readJsonResponse(res, "Ravi could not save that main channel");
+  return data.automation ?? data;
 }
 
 export async function updateYoutubeAutomation(updates) {

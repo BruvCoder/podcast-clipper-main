@@ -126,7 +126,7 @@ app.get("/api/health", (req, res) => {
     branch: process.env.RAILWAY_GIT_BRANCH || "unknown",
     billing: billing.config.state,
     youtubeAutomation: youtubeAutomationConfig.configured ? "configured" : "setup_required",
-    channelConnection: "zernio",
+    channelConnection: "public-source+zernio-clips",
     downloader: runtimeReadiness.ytDlp.ok ? "yt-dlp" : "unavailable",
     downloaderVersion: runtimeReadiness.ytDlp.version,
     ffmpeg: runtimeReadiness.ffmpeg.ok ? "configured" : "unavailable",
@@ -214,6 +214,14 @@ app.get("/api/youtube/oauth/callback", async (req, res) => {
 app.patch("/api/youtube/automation", requireAuth, async (req, res, next) => {
   try {
     res.json(await youtubeAutomation.update(req.uid, req.body || {}));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.put("/api/youtube/source-channel", requireAuth, async (req, res, next) => {
+  try {
+    res.json(await youtubeAutomation.setSourceChannel(req.uid, req.body?.url));
   } catch (error) {
     next(error);
   }
@@ -439,7 +447,7 @@ function enqueueClipJob({
 
 app.post("/api/jobs", requireAuth, (req, res) => {
   res.status(410).json({
-    error: "Ravi no longer accepts individual video links. Connect the main channel to watch and the clips channel where Ravi should post.",
+    error: "Ravi no longer accepts individual video links. Add your main-channel link and connect the clips channel where Ravi should post.",
     code: "channel_automation_only",
   });
 });

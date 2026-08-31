@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  shouldSyncSourceChannelDraft,
+  sourceChannelSnapshot,
+} from "../sourceChannelDraft.js";
+import { isValidYouTubeChannelUrl, normalizeYouTubeChannelUrl } from "../youtube.js";
+import YouTubeIcon from "./YouTubeIcon.jsx";
 
 const SUBTITLE_COLORS = ["#FFFFFF", "#FFE94A", "#72F1B8", "#64B5FF"];
 
@@ -32,7 +38,7 @@ function channelName(channel, fallback) {
   return channel?.title || channel?.name || fallback;
 }
 
-function zernioAccountIdentity(channel) {
+function channelAccountIdentity(channel) {
   return channel?.channelId || channel?.id || channel?.externalId || channel?.providerAccountId || channel?.url || null;
 }
 
@@ -59,8 +65,8 @@ function normalizeChannelUrl(value) {
 }
 
 function channelsMatch(mainChannel, clipsChannel) {
-  const mainIdentity = zernioAccountIdentity(mainChannel);
-  const clipsIdentity = zernioAccountIdentity(clipsChannel);
+  const mainIdentity = channelAccountIdentity(mainChannel);
+  const clipsIdentity = channelAccountIdentity(clipsChannel);
   if (mainIdentity && clipsIdentity && mainIdentity === clipsIdentity) return true;
 
   const mainUrl = normalizeChannelUrl(mainChannel?.url || mainChannel?.profileUrl);
@@ -91,14 +97,15 @@ function statusInfo(automation) {
   if (
     automation?.lastError
     || automation?.status === "error"
-    || automation?.sourceChannel?.needsReauth
     || automation?.clipsChannel?.needsReauth
     || (automation?.sourceChannel && automation?.clipsChannel && channelsMatch(automation.sourceChannel, automation.clipsChannel))
   ) {
     return { label: "Needs attention", tone: "error" };
   }
   if (automation?.enabled) return { label: "Watching", tone: "active" };
-  if (automation?.sourceChannel && automation?.clipsChannel) return { label: "Paused", tone: "paused" };
+  if (automation?.sourceChannel?.provider === "public" && automation?.clipsChannel) {
+    return { label: "Paused", tone: "paused" };
+  }
   return { label: "Setup needed", tone: "setup" };
 }
 
@@ -106,7 +113,7 @@ function ChannelAvatar({ channel, type }) {
   if (channel?.thumbnailUrl) {
     return <img src={channel.thumbnailUrl} alt="" />;
   }
-  return <span aria-hidden="true">{type === "clips" ? "C" : "M"}</span>;
+  return <YouTubeIcon className={type === "clips" ? "youtube-clips-mark" : "youtube-main-mark"} />;
 }
 
 export default function AutomationDashboard({
@@ -116,6 +123,7 @@ export default function AutomationDashboard({
   notice,
   action,
   onConnect,
+  onSetSource,
   onUpdate,
   onCheckNow,
   onDisconnect,
@@ -123,6 +131,10 @@ export default function AutomationDashboard({
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [certifications, setCertifications] = useState(DEFAULT_CERTIFICATIONS);
   const [disconnectArmed, setDisconnectArmed] = useState(null);
+  const [sourceUrl, setSourceUrl] = useState("");
+  const [sourceDraftDirty, setSourceDraftDirty] = useState(false);
+  const sourceSignatureRef = useRef();
+  const previousActionRef = useRef(action);
 
   useEffect(() => {
     setSettings({
@@ -132,14 +144,43 @@ export default function AutomationDashboard({
     setCertifications({ ...DEFAULT_CERTIFICATIONS, ...(automation?.certifications || {}) });
   }, [automation]);
 
+  const savedSource = sourceChannelSnapshot(automation?.sourceChannel);
+
+  useEffect(() => {
+    const shouldSync = shouldSyncSourceChannelDraft({
+      initialized: sourceSignatureRef.current !== undefined,
+      dirty: sourceDraftDirty,
+      previousSignature: sourceSignatureRef.current,
+      nextSignature: savedSource.signature,
+      previousAction: previousActionRef.current,
+      action,
+      error,
+    });
+
+    if (shouldSync) {
+      setSourceUrl(savedSource.url);
+      setSourceDraftDirty(false);
+    }
+    sourceSignatureRef.current = savedSource.signature;
+    previousActionRef.current = action;
+  }, [action, error, savedSource.signature, savedSource.url, sourceDraftDirty]);
+
   const sourceConnected = Boolean(automation?.sourceChannel);
   const clipsConnected = Boolean(automation?.clipsChannel);
-  const sourceReady = sourceConnected && !automation?.sourceChannel?.needsReauth;
+  const sourceReady = sourceConnected && automation?.sourceChannel?.provider === "public";
   const clipsReady = clipsConnected && !automation?.clipsChannel?.needsReauth;
   const connectionsDistinct = sourceConnected && clipsConnected && !channelsMatch(automation.sourceChannel, automation.clipsChannel);
   const certified = certifications.ownsSourceContent && certifications.acceptsCommunityGuidelines;
   const canEnable = sourceReady && clipsReady && connectionsDistinct && certified && action === null;
   const status = useMemo(() => statusInfo(automation), [automation]);
+  const normalizedSourceUrl = normalizeYouTubeChannelUrl(sourceUrl);
+  const sourceUrlValid = isValidYouTubeChannelUrl(sourceUrl);
+
+  function saveSourceChannel(event) {
+    event.preventDefault();
+    if (!normalizedSourceUrl || action !== null) return;
+    onSetSource(normalizedSourceUrl);
+  }
 
   function payload(enabled = automation?.enabled || false) {
     return {
@@ -170,12 +211,12 @@ export default function AutomationDashboard({
       <div className="automation-page">
         <div className="automation-heading">
           <div>
-            <h1>Connect Ravi to your channels</h1>
+            <h1>Connect your clips channel</h1>
             <p>Channel automation is not available on this deployment yet.</p>
           </div>
         </div>
         <div className="automation-alert error" role="alert">
-          {automation.message || "Zernio needs to be configured by the app owner before channels can be connected."}
+          {automation.message || "Channel connections are not available on this deployment yet."}
         </div>
       </div>
     );
@@ -186,7 +227,7 @@ export default function AutomationDashboard({
       <div className="automation-heading">
         <div>
           <h1>Ravi overview</h1>
-          <p>Ravi watches your main channel and posts new clips whenever you publish.</p>
+          <p>Ravi watches your main channel and posts the most viral-ready moments to your clips channel.</p>
         </div>
         <span className={`automation-status ${status.tone}`}>
           <i aria-hidden="true" /> {status.label}
@@ -220,22 +261,56 @@ export default function AutomationDashboard({
             </div>
             <div>
               <span className="channel-role">Main channel</span>
-              <strong>{channelName(automation?.sourceChannel, "Not connected")}</strong>
-              <small>{automation?.sourceChannel?.needsReauth
-                ? "Reconnect through Zernio to resume watching"
-                : sourceConnected
-                ? "Securely connected through Zernio"
-                : "Connect the channel Ravi should watch"}</small>
+              {sourceConnected && automation?.sourceChannel?.url ? (
+                <a
+                  className="channel-name-link"
+                  href={automation.sourceChannel.url}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {channelName(automation.sourceChannel, "Main channel")} <span aria-hidden="true">↗</span>
+                </a>
+              ) : (
+                <strong>{channelName(automation?.sourceChannel, "Add a channel link")}</strong>
+              )}
+              <small>{sourceReady
+                ? "Ravi will watch this public channel"
+                : "Add the public channel Ravi should watch"}</small>
             </div>
-            <div className="channel-node-actions">
-              <button
-                className="channel-connect-btn"
-                type="button"
-                onClick={() => onConnect("main")}
-                disabled={action !== null}
+            <form className="channel-main-link-form" onSubmit={saveSourceChannel} noValidate>
+              <label htmlFor="main-channel-url">Main channel link or @handle</label>
+              <div className="channel-main-link-control">
+                <input
+                  id="main-channel-url"
+                  type="text"
+                  inputMode="url"
+                  autoComplete="url"
+                  value={sourceUrl}
+                  disabled={action === "saving-source"}
+                  onChange={(event) => {
+                    setSourceUrl(event.target.value);
+                    setSourceDraftDirty(true);
+                  }}
+                  placeholder="https://youtube.com/@yourchannel"
+                  aria-invalid={Boolean(sourceUrl.trim()) && !sourceUrlValid}
+                  aria-describedby="main-channel-url-help"
+                />
+                <button
+                  className="channel-connect-btn"
+                  type="submit"
+                  disabled={action !== null || !sourceUrlValid}
+                >
+                  {action === "saving-source" ? "Saving…" : sourceConnected ? "Update" : "Save"}
+                </button>
+              </div>
+              <small
+                id="main-channel-url-help"
+                className={sourceUrl.trim() && !sourceUrlValid ? "channel-link-error" : ""}
               >
-                {action === "connecting-main" ? "Connecting…" : sourceConnected ? "Reconnect with Zernio" : "Connect with Zernio"}
-              </button>
+                {sourceUrl.trim() && !sourceUrlValid
+                  ? "Enter a YouTube channel link or @handle."
+                  : "No sign-in needed for your public main channel."}
+              </small>
               {sourceConnected && (
                 <button
                   className="channel-disconnect-btn"
@@ -249,11 +324,11 @@ export default function AutomationDashboard({
                   {action === "disconnecting-main"
                     ? "Disconnecting…"
                     : disconnectArmed === "main"
-                    ? "Confirm disconnect"
-                    : "Disconnect"}
+                    ? "Confirm remove"
+                    : "Remove link"}
                 </button>
               )}
-            </div>
+            </form>
           </div>
 
           <div className="channel-route-agent" aria-label="Ravi creates and publishes clips">
@@ -273,10 +348,10 @@ export default function AutomationDashboard({
               <span className="channel-role">Clips channel</span>
               <strong>{channelName(automation?.clipsChannel, "Not connected")}</strong>
               <small>{automation?.clipsChannel?.needsReauth
-                ? "Reconnect through Zernio to resume publishing"
+                ? "Reconnect to resume publishing"
                 : clipsConnected
-                ? "Securely connected through Zernio"
-                : "Connect the destination channel"}</small>
+                ? "Ready for Ravi to publish"
+                : "Connect the channel where Ravi should post"}</small>
             </div>
             <div className="channel-node-actions">
               <button
@@ -285,7 +360,7 @@ export default function AutomationDashboard({
                 onClick={() => onConnect("clips")}
                 disabled={action !== null}
               >
-                {action === "connecting-clips" ? "Connecting…" : clipsConnected ? "Reconnect with Zernio" : "Connect with Zernio"}
+                {action === "connecting-clips" ? "Connecting…" : clipsConnected ? "Reconnect clips channel" : "Connect your clips channel"}
               </button>
               {clipsConnected && (
                 <button
@@ -310,8 +385,8 @@ export default function AutomationDashboard({
 
         <p className={`channel-route-help ${sourceConnected && clipsConnected && !connectionsDistinct ? "error" : ""}`}>
           {sourceConnected && clipsConnected && !connectionsDistinct
-            ? "Your main and clips channels must be different. Reconnect one of them through Zernio."
-            : "Connect two different channels. Ravi starts with the next public upload after you turn watching on; existing videos are not backfilled."}
+            ? "Your main and clips channels must be different. Change your main link or reconnect your clips channel."
+            : "Add your main channel and connect a different clips channel. Ravi starts with the next public upload after you turn watching on; existing videos are not backfilled."}
         </p>
       </section>
 
@@ -485,7 +560,7 @@ export default function AutomationDashboard({
             Save setup
           </button>
           {!canEnable && !automation?.enabled && (
-            <p className="automation-requirements">Connect two different channels through Zernio and confirm both certifications to turn Ravi on.</p>
+            <p className="automation-requirements">Add your main channel, connect a different clips channel, and confirm both certifications to turn Ravi on.</p>
           )}
         </section>
       </div>

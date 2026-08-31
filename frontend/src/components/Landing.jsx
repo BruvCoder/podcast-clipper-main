@@ -1,9 +1,10 @@
 import Waveform from "./Waveform.jsx";
+import YouTubeIcon from "./YouTubeIcon.jsx";
 
 const FEATURES = [
   {
     title: "Every upload starts the workflow",
-    text: "Ravi watches your securely connected main channel for new public videos, so there is no link to paste and no job to start.",
+    text: "Add your main channel once. Ravi watches for new public videos, so there is no link to paste and no job to start.",
   },
   {
     title: "Engaging clips, made for you",
@@ -16,32 +17,15 @@ const FEATURES = [
 ];
 
 const STEPS = [
-  ["Connect your main and clips channels", "Zernio securely connects the channel Ravi watches and the channel where Ravi publishes."],
+  ["Add your main channel", "Share the public channel link Ravi should watch for new uploads."],
+  ["Connect your clips channel", "Choose the YouTube channel where Ravi should publish."],
   ["Set your clip style", "Choose clip count, length, framing, captions, and visibility."],
-  ["Ravi watches and posts", "Each new upload becomes a set of clips on your clips channel."],
 ];
 
 function ArrowIcon() {
   return (
     <svg viewBox="0 0 18 18" fill="none" aria-hidden="true">
       <path d="M4 9h10M10 5l4 4-4 4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function CheckIcon() {
-  return (
-    <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <path d="m4 8.2 2.3 2.3L12 5.4" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function ChannelIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <rect x="3" y="5" width="18" height="14" rx="4" stroke="currentColor" strokeWidth="1.7" />
-      <path d="m10 9 5 3-5 3V9Z" fill="currentColor" />
     </svg>
   );
 }
@@ -108,12 +92,12 @@ function ConnectChannelCta({ onConnect }) {
     <div className="landing-connect-wrap">
       <button className="landing-connect-cta" type="button" onClick={onConnect}>
         <span className="landing-connect-icon">
-          <ChannelIcon />
+          <YouTubeIcon />
         </span>
-        <span>Connect your channels</span>
+        <span>Connect your clips channel</span>
         <span className="landing-submit-arrow"><ArrowIcon /></span>
       </button>
-      <span className="landing-connect-help">Sign in to securely connect both channels through Zernio.</span>
+      <span className="landing-connect-help">Sign in to connect the channel where Ravi publishes.</span>
     </div>
   );
 }
@@ -142,15 +126,15 @@ export default function Landing({ onConnect, onSignIn }) {
             Meet Ravi. Your <em>personal clipping agent.</em>
           </h1>
           <p className="landing-subtitle">
-            Connect your main and clips channels securely through Zernio. When a new public video goes live, Ravi finds the strongest moments, creates engaging vertical clips, and posts them automatically.
+            Ravi watches your main channel and posts the most viral-ready moments to your clips channel.
           </p>
 
           <ConnectChannelCta onConnect={onConnect} />
 
           <div className="landing-trust-row" aria-label="Product highlights">
-            <span><CheckIcon /> Watches every new upload</span>
-            <span><CheckIcon /> Creates engaging clips</span>
-            <span><CheckIcon /> Posts to your clips channel</span>
+            <span><img src="/ravi-watch.png" alt="" width="56" height="56" /> Watches every new upload</span>
+            <span><img src="/ravi-create.png" alt="" width="56" height="56" /> Creates engaging clips</span>
+            <span><img src="/ravi-grow.png" alt="" width="56" height="56" /> Posts to your clips channel</span>
           </div>
         </section>
 
@@ -194,7 +178,7 @@ export default function Landing({ onConnect, onSignIn }) {
           <Waveform className="bottom-cta-wave" bars={32} />
           <h2>Your next upload deserves its own clip campaign.</h2>
           <button type="button" onClick={onConnect}>
-            Connect your channels <ArrowIcon />
+            Connect your clips channel <ArrowIcon />
           </button>
         </section>
       </main>

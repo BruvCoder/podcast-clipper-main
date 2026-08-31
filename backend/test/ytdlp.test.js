@@ -7,19 +7,23 @@ import test from "node:test";
 import {
   __testing,
   downloadVideo,
+  normalizeYouTubeChannelUrl,
   normalizeYouTubeUrl,
   prepareSource,
+  resolveYoutubeChannel,
   ytDlpProxyEnabled,
 } from "../src/lib/ytdlp.js";
 
 const {
   abortAwareDelay,
   buildPrivateConfig,
+  canonicalizeYouTubeChannelUrl,
   canonicalizeYouTubeUrl,
   commonArgs,
   loadProxyUrl,
   minimalChildEnvironment,
   outputFormat,
+  parseChannelMetadata,
   parseMetadata,
   redactSensitiveText,
   rotateIproyalSession,
@@ -75,6 +79,137 @@ test("rejects arbitrary hosts, credentials, ports, playlists, and malformed IDs"
     `https://youtube.com/watch?v=dQw4w9WgXcQ&padding=${"x".repeat(2_100)}`,
   ];
   for (const value of invalid) assert.throws(() => normalizeYouTubeUrl(value), /valid public YouTube/);
+});
+
+test("canonicalizes strict public YouTube channel URLs and bare handles", () => {
+  const channelId = "UC_x5XG1OV2P6uZZ5FSM9Ttw";
+  const expected = new Map([
+    ["@GoogleDevelopers", "https://www.youtube.com/@GoogleDevelopers/videos"],
+    ["@日本", "https://www.youtube.com/@%E6%97%A5%E6%9C%AC/videos"],
+    ["https://youtube.com/@ravi·clips", "https://www.youtube.com/@ravi%C2%B7clips/videos"],
+    ["https://youtube.com/@GoogleDevelopers", "https://www.youtube.com/@GoogleDevelopers/videos"],
+    ["http://m.youtube.com/@GoogleDevelopers/shorts/", "https://www.youtube.com/@GoogleDevelopers/videos"],
+    [`https://www.youtube.com/channel/${channelId}/featured`, `https://www.youtube.com/channel/${channelId}/videos`],
+    ["https://youtube.com/c/GoogleDevelopers", "https://www.youtube.com/c/GoogleDevelopers/videos"],
+    ["https://youtube.com/user/GoogleDevelopers/streams", "https://www.youtube.com/user/GoogleDevelopers/videos"],
+  ]);
+
+  for (const [value, canonical] of expected) {
+    assert.equal(normalizeYouTubeChannelUrl(value), canonical);
+  }
+  assert.deepEqual(canonicalizeYouTubeChannelUrl("@GoogleDevelopers"), {
+    url: "https://www.youtube.com/@GoogleDevelopers/videos",
+    username: "@GoogleDevelopers",
+  });
+  assert.deepEqual(canonicalizeYouTubeChannelUrl("@日本"), {
+    url: "https://www.youtube.com/@%E6%97%A5%E6%9C%AC/videos",
+    username: "@日本",
+  });
+});
+
+test("rejects unsafe or ambiguous YouTube channel inputs before yt-dlp", () => {
+  const invalid = [
+    "@.ab",
+    "@ab-",
+    "@handle with spaces",
+    "https://example.com/@GoogleDevelopers",
+    "https://evil.youtube.com/@GoogleDevelopers",
+    "https://user:pass@youtube.com/@GoogleDevelopers",
+    "https://youtube.com:8443/@GoogleDevelopers",
+    "https://youtube.com/watch?v=dQw4w9WgXcQ",
+    "https://youtube.com/playlist?list=PL123",
+    "https://youtu.be/dQw4w9WgXcQ",
+    "https://youtube.com/@GoogleDevelopers?sub_confirmation=1",
+    "https://youtube.com/@GoogleDevelopers#videos",
+    "https://youtube.com/@GoogleDevelopers/%2Fwatch",
+    "file:///etc/passwd",
+    "not a channel",
+    `@${"a".repeat(31)}`,
+  ];
+  for (const value of invalid) {
+    assert.throws(
+      () => normalizeYouTubeChannelUrl(value),
+      (error) => error?.code === "ERR_YTDLP_CHANNEL_URL"
+    );
+  }
+});
+
+test("resolves an immutable channel ID through the private yt-dlp wrapper", async (t) => {
+  const captureDirectory = await temporaryDirectory(t);
+  const capturePath = path.join(captureDirectory, "channel-resolution.json");
+  const binary = await executableFixture(
+    t,
+    `const fs = require("node:fs");
+let input = "";
+process.stdin.on("data", chunk => input += chunk);
+process.stdin.on("end", () => {
+  fs.writeFileSync(${JSON.stringify(capturePath)}, JSON.stringify({
+    argv: process.argv.slice(2),
+    input,
+    leakedProxy: process.env.RESIDENTIAL_PROXY_URL || null
+  }));
+  process.stdout.write(JSON.stringify({
+    id: "UC_x5XG1OV2P6uZZ5FSM9Ttw",
+    channel_id: "UC_x5XG1OV2P6uZZ5FSM9Ttw",
+    channel: "Google for Developers",
+    uploader_id: "@GoogleDevelopers",
+    thumbnails: [{ url: "invalid" }, { url: "https://img.example/channel.jpg" }],
+    entries: [{ id: "dQw4w9WgXcQ" }]
+  }));
+});`
+  );
+  const proxy = "http://user:private-password@geo.iproyal.com:12321";
+  const resolved = await resolveYoutubeChannel("@GoogleDevelopers", {
+    binary,
+    environment: { PATH: process.env.PATH, RESIDENTIAL_PROXY_URL: proxy },
+    timeoutMs: 10_000,
+  });
+
+  assert.deepEqual(resolved, {
+    id: "UC_x5XG1OV2P6uZZ5FSM9Ttw",
+    channelId: "UC_x5XG1OV2P6uZZ5FSM9Ttw",
+    title: "Google for Developers",
+    username: "@GoogleDevelopers",
+    thumbnailUrl: "https://img.example/channel.jpg",
+    url: "https://www.youtube.com/channel/UC_x5XG1OV2P6uZZ5FSM9Ttw",
+  });
+  const capture = JSON.parse(await fs.promises.readFile(capturePath, "utf8"));
+  assert.equal(capture.argv.at(-1), "https://www.youtube.com/@GoogleDevelopers/videos");
+  assert.equal(capture.argv.includes("--flat-playlist"), true);
+  assert.equal(capture.argv[capture.argv.indexOf("--playlist-end") + 1], "1");
+  assert.equal(capture.argv.includes("--no-playlist"), false);
+  assert.equal(capture.argv.join(" ").includes("private-password"), false);
+  assert.ok(capture.input.includes(proxy));
+  assert.equal(capture.leakedProxy, null);
+});
+
+test("rejects incomplete or malformed yt-dlp channel metadata", () => {
+  const channelId = "UC_x5XG1OV2P6uZZ5FSM9Ttw";
+  assert.deepEqual(
+    parseChannelMetadata(JSON.stringify({
+      id: channelId,
+      title: "Example Channel - Videos",
+      uploader_id: "not a handle",
+      thumbnail: "javascript:alert(1)",
+    })),
+    {
+      id: channelId,
+      channelId,
+      title: "Example Channel",
+      username: null,
+      thumbnailUrl: null,
+      url: `https://www.youtube.com/channel/${channelId}`,
+    }
+  );
+  assert.throws(() => parseChannelMetadata("not-json"), /invalid YouTube channel metadata/);
+  assert.throws(
+    () => parseChannelMetadata(JSON.stringify({ id: "not-a-channel", title: "Wrong" })),
+    /incomplete YouTube channel metadata/
+  );
+  assert.throws(
+    () => parseChannelMetadata(JSON.stringify({ id: channelId, title: "   " })),
+    /incomplete YouTube channel metadata/
+  );
 });
 
 test("validates residential proxy variables and the legacy alias", () => {
