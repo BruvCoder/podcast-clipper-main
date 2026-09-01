@@ -3849,3 +3849,195 @@ input[type="range"]::-moz-range-thumb {
   color: var(--text-faint);
   pointer-events: none;
 }
+
+/* --- Public beta page (/beta) ---
+   Standalone from the product shell: no sidebar, no theme toggle, no auth.
+   The :root palette is the dark theme, and /beta never sets data-theme, so
+   these all resolve against it. */
+
+.beta-page {
+  min-height: 100vh;
+  min-height: 100dvh;
+  background: var(--bg);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 40px 18px max(40px, env(safe-area-inset-bottom));
+}
+
+.beta-card {
+  width: 100%;
+  max-width: 620px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+  padding: 32px 28px;
+}
+
+.beta-header {
+  margin-bottom: 18px;
+}
+
+.beta-badge {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.beta-header h1 {
+  margin: 12px 0 0;
+  font-size: 27px;
+  line-height: 1.2;
+}
+
+.beta-lede {
+  margin: 0 0 20px;
+  color: var(--text-muted);
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+.beta-lede strong {
+  color: var(--text);
+}
+
+.beta-form {
+  display: flex;
+  flex-direction: column;
+}
+
+.beta-input {
+  width: 100%;
+}
+
+.beta-note {
+  margin: 16px 0 0;
+  color: var(--text-faint);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+/* --- Progress --- */
+
+.beta-progress {
+  margin: 8px 0 4px;
+}
+
+.beta-progress-track {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  overflow: hidden;
+}
+
+.beta-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width 0.45s ease;
+}
+
+/* An unrecognised backend stage has no percentage to show, so the bar
+   animates instead of sitting at a misleading zero. */
+.beta-progress-fill.indeterminate {
+  width: 35%;
+  animation: beta-slide 1.5s ease-in-out infinite;
+}
+
+@keyframes beta-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(320%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .beta-progress-fill.indeterminate { animation: none; }
+}
+
+.beta-progress-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 12px 0 0;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.beta-progress-percent {
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Finished clips --- */
+
+.beta-done-head h2 {
+  margin: 0 0 4px;
+  font-size: 21px;
+}
+
+.beta-source {
+  margin: 0 0 20px;
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.beta-clips {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 16px;
+  margin-bottom: 22px;
+}
+
+.beta-clip {
+  margin: 0;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.beta-clip video {
+  display: block;
+  width: 100%;
+  aspect-ratio: 9 / 16;
+  object-fit: cover;
+  background: var(--surface-deep);
+}
+
+.beta-clip figcaption {
+  padding: 11px 12px 13px;
+}
+
+.beta-rank {
+  color: var(--score);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.beta-clip-title {
+  margin: 5px 0 11px;
+  font-size: 13px;
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* An <a> gets none of the base `button` rule, so restate the box here. */
+.beta-download {
+  display: block;
+  padding: 9px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+  text-decoration: none;
+}
