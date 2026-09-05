@@ -23,12 +23,6 @@ import {
   recoverJobFromDiskSync,
 } from "./lib/jobLifecycle.js";
 import { inspectRuntimeReadiness } from "./lib/runtimeReadiness.js";
-import {
-  betaFacingError,
-  clientKey,
-  createBetaAccess,
-  loadBetaAccessConfig,
-} from "./lib/betaAccess.js";
 import { FileYoutubeAutomationStore } from "./lib/youtubeAutomationStore.js";
 import {
   createYoutubeAutomationService,
@@ -52,13 +46,6 @@ const MAX_OUTSTANDING_JOBS_PER_USER = positiveInteger(
   2
 );
 const jobLimiter = createConcurrencyLimiter(JOB_PROCESS_CONCURRENCY);
-
-// Public /beta page for recruiting testers. Every beta run is attributed to
-// one shared owner id so MAX_OUTSTANDING_JOBS_PER_USER caps how much of the
-// pipeline strangers can occupy at once, and so a beta job can never be read
-// through the authenticated job routes (no Firebase uid can equal this value).
-const BETA_JOB_UID = "beta:public";
-const betaAccess = createBetaAccess({ config: loadBetaAccessConfig() });
 
 const billingConfig = loadStripeBillingConfig();
 const stripe = billingConfig.enabled
@@ -119,13 +106,6 @@ app.get("/files/:jobId/clips/:fileName", (req, res, next) => {
   if (!validJobId || !validClipName) return res.status(404).json({ error: "Clip not found." });
 
   const clipPath = path.join(JOBS_DIR, jobId, "clips", fileName);
-  // The frontend and backend are separate origins, so a plain `<a download>`
-  // is ignored by browsers and the clip just opens in a tab. Opting in here is
-  // what makes "Download" actually save the file. fileName is already
-  // constrained to `clip_<n>.mp4` above, so it is safe to echo into the header.
-  if (req.query.download === "1") {
-    res.set("Content-Disposition", `attachment; filename="${fileName}"`);
-  }
   res.sendFile(clipPath, { dotfiles: "deny" }, (err) => {
     if (!err) return;
     if (err.status === 404 || err.code === "ENOENT") {
@@ -146,9 +126,6 @@ app.get("/api/health", (req, res) => {
     branch: process.env.RAILWAY_GIT_BRANCH || "unknown",
     billing: billing.config.state,
     youtubeAutomation: youtubeAutomationConfig.configured ? "configured" : "setup_required",
-    // Reports whether the page is open and how much of today's cap is spent.
-    // Never includes the code itself.
-    betaPage: betaAccess.status(),
     channelConnection: "public-source+zernio-clips",
     downloader: runtimeReadiness.ytDlp.ok ? "yt-dlp" : "unavailable",
     downloaderVersion: runtimeReadiness.ytDlp.version,
@@ -475,62 +452,6 @@ app.post("/api/jobs", requireAuth, (req, res) => {
   });
 });
 
-// --- Public beta demo (vod-clipper.com/beta) -------------------------------
-// A code-gated way to show Ravi's output from a single video link, without a
-// channel connection or an account. Deliberately separate from /api/jobs
-// rather than a flag on it: these run unauthenticated, so keeping them on
-// their own routes means no beta request can ever reach a signed-in user's
-// job, and the 410 above stays true for the real product.
-
-const BETA_CLIP_COUNT = 3;
-const BETA_CLIP_LENGTH_SEC = 30;
-
-app.post("/api/beta/jobs", betaAccess.requireCode, (req, res, next) => {
-  const reservation = betaAccess.reserveRun(clientKey(req));
-  if (!reservation.ok) {
-    res.set("Retry-After", String(reservation.retryAfterSec));
-    return res.status(reservation.status).json({
-      error: reservation.message,
-      code: reservation.code,
-    });
-  }
-
-  try {
-    const jobId = enqueueClipJob({
-      uid: BETA_JOB_UID,
-      youtubeUrl: req.body?.youtubeUrl,
-      settings: {
-        numClips: BETA_CLIP_COUNT,
-        clipLengthSec: BETA_CLIP_LENGTH_SEC,
-        cropMode: "crop",
-      },
-      trigger: "beta",
-    });
-    res.status(202).json({ jobId });
-  } catch (error) {
-    // A rejected job never ran, so it must not spend the tester's slot or a
-    // run from today's cap.
-    reservation.release();
-    next(error);
-  }
-});
-
-app.get("/api/beta/jobs/:id", betaAccess.requireCode, (req, res) => {
-  const job = jobs.get(req.params.id);
-  // Checking the owner (not just the trigger) is what keeps a valid beta code
-  // from being used to read any job id it can guess.
-  if (!job || job.uid !== BETA_JOB_UID) return res.status(404).json({ error: "Job not found." });
-  res.json({
-    id: job.id,
-    status: job.status,
-    stage: job.stage,
-    // Never the raw pipeline error: it quotes subprocess output.
-    error: betaFacingError(job.error),
-    sourceTitle: job.sourceTitle || null,
-    clips: job.clips || [],
-  });
-});
-
 app.get("/api/jobs", requireAuth, (req, res) => {
   const list = [...jobs.values()]
     .filter((j) => j.uid === req.uid)
@@ -808,11 +729,6 @@ app.use((err, req, res, next) => {
 const server = app.listen(PORT, () => {
   console.log(`Ravi backend listening on http://localhost:${PORT}`);
   youtubeAutomation.start();
-  if (betaAccess.config.tooShort) {
-    console.error(
-      "BETA_ACCESS_CODE is shorter than 8 characters; /beta stays closed. Set a longer code."
-    );
-  }
   if (!runtimeReadiness.ok) {
     console.error("Downloader runtime is not ready; /api/health will return HTTP 503.");
   }

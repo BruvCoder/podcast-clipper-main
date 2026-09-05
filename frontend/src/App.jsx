@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import Loading from "./components/Loading.jsx";
 import Results from "./components/Results.jsx";
 import Landing from "./components/Landing.jsx";
-import Beta from "./components/Beta.jsx";
 import Auth from "./components/Auth.jsx";
 import Sidebar from "./components/Sidebar.jsx";
 import AutomationDashboard from "./components/AutomationDashboard.jsx";
@@ -70,22 +69,7 @@ function clearOauthReturn() {
   window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
 }
 
-// `serve -s dist` serves index.html for any path, so /beta reaches this app
-// and is matched here. The beta page is checked before anything auth-related
-// because it must work for people who have no account at all.
-function isBetaPath() {
-  if (typeof window === "undefined") return false;
-  return /^\/beta\/?$/.test(window.location.pathname);
-}
-
 export default function App() {
-  // Rendered instead of the product shell, not inside it, so none of the
-  // sign-in or automation effects below ever run for a beta visitor.
-  if (isBetaPath()) return <Beta />;
-  return <ProductApp />;
-}
-
-function ProductApp() {
   const { user } = useAuth();
   const authLoading = user === undefined;
 

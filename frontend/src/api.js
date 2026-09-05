@@ -45,28 +45,6 @@ export async function createJob({ youtubeUrl, numClips, clipLengthSec, subtitleC
   return data.jobId;
 }
 
-// --- Public beta demo (/beta) ---------------------------------------------
-// These are the only requests in this client that carry no Firebase token.
-// The beta code is supplied by the tester and travels in a header instead, so
-// it never lands in a URL, a referrer, or a server access log.
-
-export async function createBetaJob({ betaCode, youtubeUrl }) {
-  const res = await fetch(`${API_BASE_URL}/api/beta/jobs`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Beta-Code": betaCode },
-    body: JSON.stringify({ youtubeUrl }),
-  });
-  const data = await readJsonResponse(res, "Could not start your clips");
-  return data.jobId;
-}
-
-export async function getBetaJob({ betaCode, jobId }) {
-  const res = await fetch(`${API_BASE_URL}/api/beta/jobs/${jobId}`, {
-    headers: { "X-Beta-Code": betaCode },
-  });
-  return readJsonResponse(res, "Could not check on your clips");
-}
-
 export async function getJob(jobId) {
   const res = await fetch(`${API_BASE_URL}/api/jobs/${jobId}`, { headers: await authHeaders() });
   return readJsonResponse(res, "Failed to fetch job");
