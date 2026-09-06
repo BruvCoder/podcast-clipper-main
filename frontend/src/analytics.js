@@ -129,18 +129,24 @@ export function trackEvent(name, params = {}, win = globalThis.window) {
   return true;
 }
 
-/** Records a view change as a page_view against a virtual path. */
-export function trackPageView(viewName, win = globalThis.window) {
-  const view = String(viewName || "").trim();
-  if (!view) return false;
+/**
+ * Records a view change as a page_view.
+ *
+ * `path` is the route's shape, not the address bar: /clips/:id rather than the
+ * job's real UUID. Sending the raw path would put one row per job into GA4's
+ * reports and ship a per-user identifier to Google.
+ */
+export function trackPageView(path, win = globalThis.window) {
+  const page = String(path || "").trim();
+  if (!page.startsWith("/")) return false;
   return trackEvent(
     "page_view",
     {
-      page_title: view,
-      page_path: `/${view}`,
-      // Real location minus any query string, which is where checkout results
-      // and OAuth callbacks park identifiers we do not want recorded.
-      page_location: win?.location ? `${win.location.origin}/${view}` : undefined,
+      page_title: page,
+      page_path: page,
+      // Built from the origin rather than href, so the query string is left
+      // out — that is where OAuth callbacks park identifiers.
+      page_location: win?.location?.origin ? `${win.location.origin}${page}` : undefined,
     },
     win
   );

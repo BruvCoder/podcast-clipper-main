@@ -8,6 +8,13 @@ import AutomationDashboard from "./components/AutomationDashboard.jsx";
 import { useAuth } from "./AuthContext.jsx";
 import { trackEvent, trackPageView } from "./analytics.js";
 import {
+  ROUTES,
+  currentRoute,
+  navigate,
+  routePattern,
+  subscribeToRoute,
+} from "./router.js";
+import {
   checkYoutubeNow,
   deleteJob,
   disconnectYoutube,
@@ -74,11 +81,11 @@ export default function App() {
   const { user } = useAuth();
   const authLoading = user === undefined;
 
+  const [route, setRoute] = useState(currentRoute);
   const [theme, setTheme] = useState(getInitialTheme);
-  const [signedOutView, setSignedOutView] = useState("landing");
-  const [mainView, setMainView] = useState("overview");
+  // Only meaningful on a clip route: how far along that one job is.
+  const [clipState, setClipState] = useState("loading");
   const [job, setJob] = useState(null);
-  const [activeJobId, setActiveJobId] = useState(null);
   const [jobsList, setJobsList] = useState([]);
   const [jobError, setJobError] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -91,18 +98,80 @@ export default function App() {
 
   const pollRef = useRef(null);
   const connectStartedRef = useRef(false);
-  const showingLanding = !authLoading && !user && signedOutView === "landing";
+  // user === null means both "never signed in" and "just signed out", and the
+  // two need different handling for the URL.
+  const hadUserRef = useRef(false);
+
+  // The URL is the source of truth for which view is showing; the job id is
+  // read back out of it rather than tracked separately.
+  const activeJobId = route.name === "clip" ? route.jobId : null;
+  const showingLanding = !authLoading && !user && route.name === "landing";
 
   useEffect(() => () => clearInterval(pollRef.current), []);
 
-  // One URL serves every view, so page_view has to follow state instead of
-  // navigation. Held back until auth resolves, otherwise every visit would
-  // report a spurious "landing" hit before the session is known.
-  const analyticsView = authLoading ? null : user ? mainView : signedOutView;
+  useEffect(() => subscribeToRoute(setRoute), []);
 
   useEffect(() => {
-    if (analyticsView) trackPageView(analyticsView);
-  }, [analyticsView]);
+    if (user) hadUserRef.current = true;
+  }, [user]);
+
+  // Routes that cannot render as asked are corrected with replace(), so the
+  // back button does not land the user right back on them.
+  useEffect(() => {
+    if (authLoading) return;
+    if (user && (route.name === "landing" || route.name === "signin" || route.name === "notFound")) {
+      // preserveQuery: the YouTube OAuth callback returns to "/?youtube=…",
+      // and that result is read further down before being cleared.
+      navigate(ROUTES.overview, { replace: true, preserveQuery: true });
+    } else if (!user && route.name === "notFound") {
+      navigate(ROUTES.landing, { replace: true });
+    }
+  }, [authLoading, user, route.name]);
+
+  // Held back until auth resolves, otherwise every visit reports a spurious
+  // hit before the session is known and the redirect above settles.
+  const analyticsPath = authLoading ? null : routePattern(route);
+
+  useEffect(() => {
+    if (analyticsPath) trackPageView(analyticsPath);
+  }, [analyticsPath]);
+
+  // Loading a clip set is driven by the URL, so a sidebar click, a pasted
+  // link, a refresh, and the back button all follow one path.
+  useEffect(() => {
+    if (authLoading || !user || route.name !== "clip") return undefined;
+
+    const { jobId } = route;
+    let cancelled = false;
+    clearInterval(pollRef.current);
+    setJobError(null);
+    setJob(null);
+    setClipState("loading");
+
+    (async () => {
+      try {
+        const data = await getJob(jobId);
+        if (cancelled) return;
+        setJob(data);
+        if (data.status === "done") setClipState("results");
+        else if (data.status === "error") {
+          setJobError(data.error);
+          setClipState("error");
+        } else pollJob(jobId);
+      } catch (error) {
+        if (cancelled) return;
+        // Covers a deleted job and someone else's id alike: the backend scopes
+        // jobs to the caller, so a valid-looking URL can still be a 404.
+        setJobError(error.message);
+        setClipState("error");
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      clearInterval(pollRef.current);
+    };
+  }, [authLoading, user, route.name, route.jobId]);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
@@ -122,10 +191,15 @@ export default function App() {
     if (user !== null) return;
     clearInterval(pollRef.current);
     connectStartedRef.current = false;
-    setSignedOutView("landing");
-    setMainView("overview");
+    // Signing out of a clip route must not leave that URL in the bar. Arriving
+    // signed out is different: the deep link is kept so that signing in
+    // resumes where the visitor was headed.
+    if (hadUserRef.current) {
+      hadUserRef.current = false;
+      navigate(ROUTES.landing, { replace: true });
+    }
+    setClipState("loading");
     setJob(null);
-    setActiveJobId(null);
     setJobsList([]);
     setJobError(null);
     setAutomation(null);
@@ -210,29 +284,25 @@ export default function App() {
         setJob(data);
         if (data.status === "done") {
           clearInterval(pollRef.current);
-          setMainView("results");
+          setClipState("results");
           refreshJobsList();
         } else if (data.status === "error") {
           clearInterval(pollRef.current);
           setJobError(data.error);
-          setMainView("error");
+          setClipState("error");
           refreshJobsList();
         }
       } catch (error) {
         clearInterval(pollRef.current);
         setJobError(error.message);
-        setMainView("error");
+        setClipState("error");
       }
     }, 2000);
   }
 
   function handleOverview() {
-    clearInterval(pollRef.current);
-    setActiveJobId(null);
-    setJob(null);
-    setJobError(null);
-    setMainView("overview");
     setSidebarOpen(false);
+    navigate(ROUTES.overview);
   }
 
   async function handleDeleteJob(id) {
@@ -241,34 +311,21 @@ export default function App() {
     if (id === activeJobId) handleOverview();
   }
 
-  async function handleSelectHistoryJob(id) {
+  function handleSelectHistoryJob(id) {
     setSidebarOpen(false);
-    setActiveJobId(id);
-    setJobError(null);
-    clearInterval(pollRef.current);
-    setMainView("loading");
-    try {
-      const data = await getJob(id);
-      setJob(data);
-      if (data.status === "done") setMainView("results");
-      else if (data.status === "error") {
-        setJobError(data.error);
-        setMainView("error");
-      } else pollJob(id);
-    } catch (error) {
-      setJobError(error.message);
-      setMainView("error");
-    }
+    // Navigation only. The route effect below does the loading, so a click, a
+    // pasted link, and the back button all take exactly the same path.
+    navigate(`/clips/${id}`);
   }
 
   function handleLandingConnect() {
     setConnectIntent(true);
-    setSignedOutView("auth");
+    navigate(ROUTES.signin);
   }
 
   function handleLandingSignIn() {
     setConnectIntent(false);
-    setSignedOutView("auth");
+    navigate(ROUTES.signin);
   }
 
   async function handleConnectYoutube(role) {
@@ -378,11 +435,13 @@ export default function App() {
       {authLoading && <div className="centered-shell"><span className="stage-text">Loading…</span></div>}
 
       {!authLoading && !user && (
-        <div className={`centered-shell ${signedOutView === "landing" ? "landing-shell" : ""}`}>
-          {signedOutView === "landing" ? (
+        <div className={`centered-shell ${showingLanding ? "landing-shell" : ""}`}>
+          {showingLanding ? (
             <Landing onConnect={handleLandingConnect} onSignIn={handleLandingSignIn} />
           ) : (
-            <Auth onBack={() => setSignedOutView("landing")} />
+            // /overview and /clips/<id> reached while signed out land here, and
+            // the URL is left alone so signing in resumes where they aimed.
+            <Auth onBack={() => navigate(ROUTES.landing)} />
           )}
         </div>
       )}
@@ -404,8 +463,8 @@ export default function App() {
               <button className="menu-toggle" onClick={() => setSidebarOpen(true)} aria-label="Open menu">☰</button>
             </div>
 
-            <div className={`main-inner ${mainView === "overview" ? "overview" : ""}`}>
-              {mainView === "overview" && (
+            <div className={`main-inner ${route.name === "overview" ? "overview" : ""}`}>
+              {route.name === "overview" && (
                 <AutomationDashboard
                   automation={automation}
                   loading={automationLoading}
@@ -419,9 +478,11 @@ export default function App() {
                   onDisconnect={handleDisconnectYoutube}
                 />
               )}
-              {mainView === "loading" && <Loading stage={job?.stage} />}
-              {mainView === "results" && job && <Results job={job} onRestart={handleOverview} />}
-              {mainView === "error" && (
+              {route.name === "clip" && clipState === "loading" && <Loading stage={job?.stage} />}
+              {route.name === "clip" && clipState === "results" && job && (
+                <Results job={job} onRestart={handleOverview} />
+              )}
+              {route.name === "clip" && clipState === "error" && (
                 <div className="card error-view">
                   <h1>This clip set needs attention</h1>
                   <div className="error-box">{jobError}</div>

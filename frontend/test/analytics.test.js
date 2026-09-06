@@ -96,7 +96,7 @@ test("init does nothing at all when the configured ID is unusable", () => {
 test("tracking is a silent no-op when gtag never loaded", () => {
   // An ad blocker eating gtag.js must not throw inside a render effect.
   assert.equal(trackEvent("login", { method: "google" }, {}), false);
-  assert.equal(trackPageView("landing", {}), false);
+  assert.equal(trackPageView("/overview", {}), false);
 });
 
 test("sanitizer strips identifying keys before they reach Google", () => {
@@ -137,19 +137,40 @@ test("page views report a virtual path and never a real query string", () => {
     },
   };
 
-  assert.equal(trackPageView("overview", win), true);
+  assert.equal(trackPageView("/overview", win), true);
   const [type, name, params] = win.calls[0];
   assert.equal(type, "event");
   assert.equal(name, "page_view");
   assert.equal(params.page_path, "/overview");
-  assert.equal(params.page_title, "overview");
-  // Checkout results and OAuth callbacks park identifiers in the query string.
+  assert.equal(params.page_location, "https://vod-clipper.com/overview");
+  // OAuth callbacks park identifiers in the query string.
   assert.equal(params.page_location.includes("?"), false);
   assert.equal(params.page_location.includes("token"), false);
 });
 
-test("an empty view name is not reported", () => {
-  const win = { gtag: () => assert.fail("must not send a nameless page_view") };
+test("a clip page_view carries the route shape, never the job UUID", () => {
+  const win = {
+    location: { origin: "https://vod-clipper.com" },
+    calls: [],
+    gtag(...args) {
+      win.calls.push(args);
+    },
+  };
+
+  // App passes routePattern(), so the id is already collapsed. Assert the
+  // whole payload stays free of it: one GA4 row per job would be useless, and
+  // a job id is a per-user identifier.
+  assert.equal(trackPageView("/clips/:id", win), true);
+  const payload = JSON.stringify(win.calls[0]);
+  assert.equal(payload.includes("/clips/:id"), true);
+  assert.equal(/[0-9a-f]{8}-[0-9a-f]{4}/.test(payload), false);
+});
+
+test("a page_view without a real path is not reported", () => {
+  const win = { gtag: () => assert.fail("must not send a pathless page_view") };
   assert.equal(trackPageView("", win), false);
   assert.equal(trackPageView(null, win), false);
+  // A bare view name is the pre-routing calling convention; it must not
+  // silently become the path "overview".
+  assert.equal(trackPageView("overview", win), false);
 });
