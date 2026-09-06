@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import {
+  getAdditionalUserInfo,
   onAuthStateChanged,
   signInWithPopup,
   signInWithEmailAndPassword,
@@ -7,6 +8,7 @@ import {
   signOut as firebaseSignOut,
 } from "firebase/auth";
 import { auth, googleProvider } from "./firebase.js";
+import { trackEvent } from "./analytics.js";
 
 const AuthContext = createContext(null);
 
@@ -21,7 +23,11 @@ export function AuthProvider({ children }) {
   async function signInWithGoogle() {
     setError(null);
     try {
-      await signInWithPopup(auth, googleProvider);
+      const credential = await signInWithPopup(auth, googleProvider);
+      // One Google button serves both cases, so ask Firebase which it was
+      // rather than reporting every account creation as a returning login.
+      const isNewUser = getAdditionalUserInfo(credential)?.isNewUser === true;
+      trackEvent(isNewUser ? "sign_up" : "login", { method: "google" });
     } catch (e) {
       setError(friendlyAuthError(e));
       throw e;
@@ -32,6 +38,7 @@ export function AuthProvider({ children }) {
     setError(null);
     try {
       await signInWithEmailAndPassword(auth, email, password);
+      trackEvent("login", { method: "password" });
     } catch (e) {
       setError(friendlyAuthError(e));
       throw e;
@@ -42,6 +49,7 @@ export function AuthProvider({ children }) {
     setError(null);
     try {
       await createUserWithEmailAndPassword(auth, email, password);
+      trackEvent("sign_up", { method: "password" });
     } catch (e) {
       setError(friendlyAuthError(e));
       throw e;

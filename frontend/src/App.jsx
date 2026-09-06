@@ -6,6 +6,7 @@ import Auth from "./components/Auth.jsx";
 import Sidebar from "./components/Sidebar.jsx";
 import AutomationDashboard from "./components/AutomationDashboard.jsx";
 import { useAuth } from "./AuthContext.jsx";
+import { trackEvent, trackPageView } from "./analytics.js";
 import {
   checkYoutubeNow,
   deleteJob,
@@ -93,6 +94,15 @@ export default function App() {
   const showingLanding = !authLoading && !user && signedOutView === "landing";
 
   useEffect(() => () => clearInterval(pollRef.current), []);
+
+  // One URL serves every view, so page_view has to follow state instead of
+  // navigation. Held back until auth resolves, otherwise every visit would
+  // report a spurious "landing" hit before the session is known.
+  const analyticsView = authLoading ? null : user ? mainView : signedOutView;
+
+  useEffect(() => {
+    if (analyticsView) trackPageView(analyticsView);
+  }, [analyticsView]);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
@@ -297,6 +307,9 @@ export default function App() {
     try {
       const data = await updateYoutubeAutomation(updates);
       setAutomation(data);
+      // Activation, not a click: only fires when watching actually starts.
+      if (data.enabled && !wasEnabled) trackEvent("automation_enabled");
+      else if (!data.enabled && wasEnabled) trackEvent("automation_paused");
       setAutomationNotice(
         updates.enabled
           ? "Ravi is now watching for your next public upload."
