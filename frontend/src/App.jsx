@@ -421,7 +421,7 @@ export default function App() {
       <div className="app-grain" />
       <div className="app-vignette" />
 
-      {!showingLanding && (
+      {!authLoading && !showingLanding && (
         <button
           className="theme-toggle"
           onClick={() => setTheme((value) => (value === "dark" ? "light" : "dark"))}
@@ -432,7 +432,9 @@ export default function App() {
         </button>
       )}
 
-      {authLoading && <div className="centered-shell"><span className="stage-text">Loading…</span></div>}
+      {/* Nothing renders while the session resolves. Firebase answers from
+          local storage in well under a second, and a spinner that appears and
+          vanishes in that window reads as a flash of broken layout. */}
 
       {!authLoading && !user && (
         <div className={`centered-shell ${showingLanding ? "landing-shell" : ""}`}>
