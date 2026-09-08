@@ -371,6 +371,12 @@ export default function App() {
     }
   }
 
+  function handleScheduleChange(change) {
+    // Reuses the settings update path, so the schedule is saved and validated
+    // exactly like every other clip setting.
+    handleUpdateAutomation({ settings: { ...(automation?.settings || {}), ...change } });
+  }
+
   async function handleUploadVideo(file, { onProgress, signal } = {}) {
     const jobId = await uploadVideo(file, { onProgress, signal });
     await refreshJobsList();
@@ -520,6 +526,7 @@ export default function App() {
                   onConnectDestination={handleConnectDestination}
                   onDisconnectDestination={handleDisconnectDestination}
                   onUpload={handleUploadVideo}
+                  onScheduleChange={handleScheduleChange}
                 />
               )}
               {route.name === "clip" && clipState === "loading" && <Loading stage={job?.stage} />}

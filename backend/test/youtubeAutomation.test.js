@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   createYoutubeAutomationService,
   loadYoutubeAutomationConfig,
+  scheduleSlotFor,
 } from "../src/lib/youtubeAutomationService.js";
 import { FileYoutubeAutomationStore } from "../src/lib/youtubeAutomationStore.js";
 
@@ -802,6 +803,10 @@ test("partial automation updates preserve omitted settings and certifications", 
     subtitleColor: "#12ABEF",
     privacyStatus: "public",
     madeForKids: true,
+    // Omitted from the update, so they keep their defaults rather than being
+    // dropped from the record.
+    postingSchedule: "immediate",
+    postingIntervalHours: 24,
   });
   assert.deepEqual(status.certifications, {
     ownsSourceContent: false,
@@ -860,6 +865,8 @@ test("enabling baselines existing posts and enqueues each later external post on
       subtitleColor: "#FFFFFF",
       privacyStatus: "private",
       madeForKids: false,
+      postingSchedule: "immediate",
+      postingIntervalHours: 24,
     },
     trigger: "channel",
     sourceVideoId: NEW_VIDEO_ID,
@@ -1820,4 +1827,99 @@ test("fan-out gives social destinations the short title, not YouTube's descripti
   assert.match(call.platformOptions.youtube.content, /^Created by Ravi from/);
   assert.equal(call.title, '"He never saw it coming"');
   assert.equal(call.platformOptions.tiktok, undefined);
+});
+
+test("clips post immediately unless spreading is turned on", () => {
+  const immediate = { postingSchedule: "immediate", postingIntervalHours: 24 };
+  assert.equal(scheduleSlotFor(0, immediate), null);
+  assert.equal(scheduleSlotFor(2, immediate), null);
+});
+
+test("spreading spaces a clip set out from the first post", () => {
+  const at = Date.parse("2026-09-08T09:00:00Z");
+  const settings = { postingSchedule: "spread", postingIntervalHours: 6 };
+
+  // The first clip has no scheduled time: any moment computed here is already
+  // past by the time the request lands, which Zernio refuses.
+  assert.equal(scheduleSlotFor(0, settings, at), null);
+  assert.equal(scheduleSlotFor(1, settings, at), "2026-09-08T15:00:00.000Z");
+  assert.equal(scheduleSlotFor(2, settings, at), "2026-09-08T21:00:00.000Z");
+});
+
+test("an out-of-range interval is clamped rather than scheduling absurdly", () => {
+  const at = Date.parse("2026-09-08T09:00:00Z");
+  // Clamped to a week. Longer and a clip set would still be trickling out when
+  // the next episode's clips arrive, which reads as a stuck queue.
+  assert.equal(
+    scheduleSlotFor(1, { postingSchedule: "spread", postingIntervalHours: 100000 }, at),
+    "2026-09-15T09:00:00.000Z"
+  );
+  // Clamped up to an hour, so "0" cannot mean "all at once".
+  assert.equal(
+    scheduleSlotFor(1, { postingSchedule: "spread", postingIntervalHours: 0 }, at),
+    "2026-09-08T10:00:00.000Z"
+  );
+  // Nonsense falls back to the default day.
+  assert.equal(
+    scheduleSlotFor(1, { postingSchedule: "spread", postingIntervalHours: "soon" }, at),
+    "2026-09-09T09:00:00.000Z"
+  );
+});
+
+test("a spread clip set hands its later slots to Zernio", async (t) => {
+  const store = await createStore(t);
+  await seedConnectedChannels(store, {
+    enabled: true,
+    status: "watching",
+    enabledAt: Date.parse("2026-08-30T12:00:00Z"),
+    settings: {
+      numClips: 2,
+      clipLengthSec: 45,
+      cropMode: "pad",
+      subtitleColor: "#FFFFFF",
+      privacyStatus: "public",
+      madeForKids: false,
+      postingSchedule: "spread",
+      postingIntervalHours: 3,
+    },
+    events: {
+      [NEW_VIDEO_ID]: {
+        status: "processing",
+        sourceVideoId: NEW_VIDEO_ID,
+        sourceTitle: "A strong source video",
+        jobId: "job-1",
+      },
+    },
+  });
+  const zernio = createFakeZernio();
+  const service = createService({ store, zernio });
+
+  const jobDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ravi-schedule-test-"));
+  t.after(() => fs.promises.rm(jobDir, { recursive: true, force: true }));
+  await fs.promises.mkdir(path.join(jobDir, "clips"), { recursive: true });
+  for (const index of [1, 2]) {
+    await fs.promises.writeFile(path.join(jobDir, "clips", `clip_${index}.mp4`), "rendered");
+  }
+
+  await service.publishJob({
+    uid: UID,
+    job: {
+      id: "job-1",
+      sourceVideoId: NEW_VIDEO_ID,
+      sourceTitle: "A strong source video",
+      clips: [
+        { index: 1, title: "First moment" },
+        { index: 2, title: "Second moment" },
+      ],
+    },
+    jobDir,
+    signal: new AbortController().signal,
+  });
+
+  assert.equal(zernio.calls.createPost.length, 2);
+  // The first is immediate; the second is handed to Zernio with a time, so it
+  // survives this process restarting before that time arrives.
+  assert.equal(zernio.calls.createPost[0].scheduledFor, null);
+  assert.ok(zernio.calls.createPost[1].scheduledFor);
+  assert.ok(Date.parse(zernio.calls.createPost[1].scheduledFor) > Date.now());
 });

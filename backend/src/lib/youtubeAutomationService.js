@@ -12,7 +12,16 @@ const DEFAULT_SETTINGS = Object.freeze({
   subtitleColor: "#FFFFFF",
   privacyStatus: "private",
   madeForKids: false,
+  // An episode yields several clips at once. Posting them together buries all
+  // but the first, so they can instead be spaced out; Zernio holds the
+  // schedule, which is why a pending post survives this container restarting.
+  postingSchedule: "immediate",
+  postingIntervalHours: 24,
 });
+
+// A week. Beyond that a clip set would still be trickling out when the next
+// episode's clips arrive, which reads as a stuck queue rather than a schedule.
+const MAX_POSTING_INTERVAL_HOURS = 168;
 
 const DEFAULT_CERTIFICATIONS = Object.freeze({
   ownsSourceContent: false,
@@ -286,8 +295,38 @@ function sanitizeSettings(input, current) {
     next.privacyStatus = input.privacyStatus;
   }
   if (hasOwn(input, "madeForKids")) next.madeForKids = input.madeForKids === true;
+  if (hasOwn(input, "postingSchedule")) {
+    next.postingSchedule = input.postingSchedule === "spread" ? "spread" : "immediate";
+  }
+  if (hasOwn(input, "postingIntervalHours")) {
+    next.postingIntervalHours = boundedInteger(
+      input.postingIntervalHours,
+      next.postingIntervalHours,
+      1,
+      MAX_POSTING_INTERVAL_HOURS
+    );
+  }
   delete next.notificationPreference;
   return next;
+}
+
+/**
+ * When a clip in a set should be posted.
+ *
+ * Returns null for "now", which is what the first clip always gets: a
+ * scheduled time computed here would already be in the past by the time the
+ * request reaches Zernio, and that is refused rather than published instantly.
+ */
+export function scheduleSlotFor(clipPosition, settings, at = Date.now()) {
+  if (settings?.postingSchedule !== "spread") return null;
+  if (!Number.isInteger(clipPosition) || clipPosition <= 0) return null;
+  const hours = boundedInteger(
+    settings.postingIntervalHours,
+    DEFAULT_SETTINGS.postingIntervalHours,
+    1,
+    MAX_POSTING_INTERVAL_HOURS
+  );
+  return new Date(at + clipPosition * hours * 60 * 60 * 1000).toISOString();
 }
 
 function sanitizeCertifications(input, current) {
@@ -1413,11 +1452,16 @@ export function createYoutubeAutomationService({
           { platform: "youtube", accountId: destinationId },
           ...record.destinations,
         ];
+        // The first clip goes out now and the rest are spaced after it. Giving
+        // clip zero a scheduled time would mean asking Zernio to publish at a
+        // moment that has already passed by the time the request lands.
+        const scheduledFor = scheduleSlotFor(index, publicationSettings, now());
         let response;
         try {
           response = await zernio.createClipPost({
             destinations: postDestinations,
             mediaUrl,
+            scheduledFor,
             title: String(clip.title || `Clip ${clip.index}`),
             platformOptions: {
               youtube: {

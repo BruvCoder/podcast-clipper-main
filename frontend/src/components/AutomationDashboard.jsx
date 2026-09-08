@@ -132,6 +132,7 @@ export default function AutomationDashboard({
   onConnectDestination,
   onDisconnectDestination,
   onUpload,
+  onScheduleChange,
 }) {
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [certifications, setCertifications] = useState(DEFAULT_CERTIFICATIONS);
@@ -400,6 +401,7 @@ export default function AutomationDashboard({
         action={action}
         onConnectDestination={onConnectDestination}
         onDisconnectDestination={onDisconnectDestination}
+        onScheduleChange={onScheduleChange}
       />
 
       <UploadPanel

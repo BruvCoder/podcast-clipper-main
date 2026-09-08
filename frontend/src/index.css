@@ -4088,3 +4088,83 @@ input[type="range"]::-moz-range-thumb {
     order: 3;
   }
 }
+
+/* --- Posting schedule --- */
+.schedule-block {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border, rgba(255, 255, 255, 0.09));
+}
+
+.schedule-choices {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 10px;
+}
+
+.schedule-choice {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+  border-radius: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.schedule-choice:hover {
+  border-color: rgba(120, 150, 255, 0.4);
+}
+
+.schedule-choice.selected {
+  border-color: rgba(120, 150, 255, 0.65);
+  background: rgba(120, 150, 255, 0.08);
+}
+
+.schedule-choice input {
+  margin-top: 3px;
+  accent-color: #7d96ff;
+  flex: 0 0 auto;
+}
+
+.schedule-choice-body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.schedule-choice-name {
+  font-weight: 600;
+  font-size: 0.92rem;
+}
+
+.schedule-choice-help {
+  font-size: 0.82rem;
+  line-height: 1.45;
+  color: var(--text-muted, #93a2bd);
+}
+
+.schedule-interval {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex-wrap: wrap;
+  font-size: 0.9rem;
+}
+
+.schedule-interval select {
+  padding: 7px 11px;
+  border-radius: 9px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.14));
+  background: var(--surface-2, rgba(255, 255, 255, 0.04));
+  color: inherit;
+  font: inherit;
+  font-size: 0.88rem;
+}
+
+.schedule-interval select:disabled {
+  opacity: 0.55;
+}
