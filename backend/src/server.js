@@ -185,9 +185,21 @@ app.get("/api/youtube/automation", requireAuth, async (req, res, next) => {
 
 app.post("/api/youtube/oauth/start", requireAuth, async (req, res, next) => {
   try {
-    const { url, state } = await youtubeAutomation.startOauth(req.uid, req.body?.role);
+    const { url, state } = await youtubeAutomation.startOauth(
+      req.uid,
+      req.body?.role,
+      req.body?.platform
+    );
     res.setHeader("Set-Cookie", youtubeOauthCookie(state));
     res.json({ url });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/youtube/destination/:platform", requireAuth, async (req, res, next) => {
+  try {
+    res.json(await youtubeAutomation.disconnectDestination(req.uid, req.params.platform));
   } catch (error) {
     next(error);
   }

@@ -3,6 +3,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createZernioApi, ZernioApiError } from "./zernioApi.js";
 import { resolveYoutubeChannel } from "./ytdlp.js";
 import { fetchYoutubeChannelFeed } from "./youtubeChannelFeed.js";
+import { PLATFORMS, isSupportedPlatform, listPlatforms } from "./socialPlatforms.js";
 
 const DEFAULT_SETTINGS = Object.freeze({
   numClips: 3,
@@ -79,7 +80,7 @@ export function loadYoutubeAutomationConfig(env = process.env, { stateDir } = {}
 function defaultRecord(uid) {
   return {
     uid,
-    version: 4,
+    version: 5,
     zernioProfiles: {
       main: null,
       clips: null,
@@ -92,6 +93,11 @@ function defaultRecord(uid) {
     status: "setup",
     sourceChannel: null,
     clipsChannel: null,
+    // Destinations beyond the YouTube clips channel: TikTok, Instagram, and
+    // the rest. clipsChannel stays the YouTube one rather than folding into
+    // this list, because the whole setup and validation path is built around
+    // it and rewriting that would put a working publish flow at risk.
+    destinations: [],
     settings: { ...DEFAULT_SETTINGS },
     certifications: { ...DEFAULT_CERTIFICATIONS },
     events: {},
@@ -128,8 +134,9 @@ function withDefaults(record, uid) {
   return {
     ...base,
     ...persisted,
-    version: 4,
+    version: 5,
     zernioProfiles,
+    destinations: sanitizeDestinations(record.destinations),
     pendingConnectionCleanup: {
       ...base.pendingConnectionCleanup,
       ...(record.pendingConnectionCleanup && typeof record.pendingConnectionCleanup === "object"
@@ -141,6 +148,41 @@ function withDefaults(record, uid) {
     events: record.events && typeof record.events === "object" ? record.events : {},
     recentActivity: Array.isArray(record.recentActivity) ? record.recentActivity : [],
   };
+}
+
+/**
+ * Normalises persisted destinations.
+ *
+ * A record written by an older build has no destinations at all, and one
+ * hand-edited or half-written could carry anything. Entries without a platform
+ * Ravi still supports, or without an account, are dropped rather than carried
+ * forward into a publish call that would fail at Zernio.
+ */
+function sanitizeDestinations(value) {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set();
+  const destinations = [];
+  for (const entry of value) {
+    const platform = String(entry?.platform || "");
+    const id = String(entry?.accountId || entry?.id || "");
+    if (!isSupportedPlatform(platform) || !id) continue;
+    // Zernio allows one account per platform per profile, so a duplicate here
+    // is corruption rather than a second legitimate account.
+    const key = `${platform}:${id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    destinations.push({
+      platform,
+      accountId: id,
+      title: String(entry.title || PLATFORMS[platform].label),
+      username: entry.username ? String(entry.username) : null,
+      thumbnailUrl: entry.thumbnailUrl ? String(entry.thumbnailUrl) : null,
+      url: entry.url ? String(entry.url) : null,
+      connectedAt: Number.isFinite(entry.connectedAt) ? entry.connectedAt : null,
+      needsReauth: Boolean(entry.needsReauth),
+    });
+  }
+  return destinations;
 }
 
 function addActivity(record, activity, at = Date.now()) {
@@ -205,6 +247,18 @@ function publicStatus(record, config) {
     status: current.status,
     sourceChannel: publicChannel(current.sourceChannel),
     clipsChannel: publicChannel(current.clipsChannel),
+    destinations: current.destinations.map((destination) => ({
+      platform: destination.platform,
+      label: PLATFORMS[destination.platform]?.label || destination.platform,
+      accountId: destination.accountId,
+      title: destination.title,
+      username: destination.username,
+      thumbnailUrl: destination.thumbnailUrl,
+      url: destination.url,
+      connectedAt: destination.connectedAt,
+      needsReauth: destination.needsReauth,
+    })),
+    availablePlatforms: listPlatforms(),
     settings: current.settings,
     certifications: current.certifications,
     lastCheckedAt: current.lastCheckedAt,
@@ -337,6 +391,46 @@ function channelFromAccount(account, role, connectedAt, health = null) {
   };
 }
 
+/**
+ * The same shape as channelFromAccount, for every platform that is not the
+ * YouTube clips channel. Kept separate rather than generalising that function,
+ * because it carries YouTube-specific identity fields the publish path relies
+ * on and this runs against a live flow.
+ */
+function destinationFromAccount(account, platform, connectedAt, health = null) {
+  const id = accountId(account);
+  const label = PLATFORMS[platform]?.label || platform;
+  if (!id) {
+    throw new YoutubeAutomationError(`Zernio did not return the connected ${label} account.`, {
+      status: 502,
+      code: "zernio_account_missing",
+    });
+  }
+  const tokenValid = health?.tokenStatus?.valid;
+  const canPost = health?.permissions?.canPost;
+  return {
+    platform,
+    accountId: id,
+    title: account.displayName || account.username || label,
+    username: account.username || null,
+    thumbnailUrl:
+      account.profilePicture ||
+      account.thumbnailUrl ||
+      account.profilePictureUrl ||
+      account.profileImageUrl ||
+      null,
+    url: account.profileUrl || null,
+    connectedAt,
+    // A destination exists solely to be posted to, so no-post permission is
+    // as disqualifying as an invalid token.
+    needsReauth:
+      account.isActive === false ||
+      account.needsReconnection === true ||
+      tokenValid === false ||
+      canPost === false,
+  };
+}
+
 function retryDelay(attempts) {
   return Math.min(15 * 60_000, 60_000 * (2 ** Math.max(0, attempts - 1)));
 }
@@ -346,7 +440,8 @@ function postFromResponse(response) {
 }
 
 function publicationFromPost(post, clipIndex, privacyStatus) {
-  const target = (post?.platforms || []).find((item) => item?.platform === "youtube") || {};
+  const allTargets = post?.platforms || [];
+  const target = allTargets.find((item) => item?.platform === "youtube") || {};
   const youtubeVideoId = target.platformPostId || post?.platformPostId || null;
   const youtubeUrl = target.platformPostUrl || post?.platformPostUrl ||
     (youtubeVideoId ? `https://www.youtube.com/watch?v=${youtubeVideoId}` : null);
@@ -358,6 +453,15 @@ function publicationFromPost(post, clipIndex, privacyStatus) {
     privacyStatus,
     status: target.status || post?.status || (youtubeUrl ? "published" : "publishing"),
     publishedAt: Date.parse(target.publishedAt || post?.publishedAt || "") || null,
+    // Where else this clip went. One platform failing leaves the others
+    // published, so each carries its own status rather than a single verdict.
+    destinations: allTargets
+      .filter((item) => item?.platform && item.platform !== "youtube")
+      .map((item) => ({
+        platform: item.platform,
+        status: item.status || "publishing",
+        url: item.platformPostUrl || null,
+      })),
   };
 }
 
@@ -503,7 +607,7 @@ export function createYoutubeAutomationService({
     return resolvedId;
   }
 
-  async function startOauth(uid, role = "clips") {
+  async function startOauth(uid, role = "clips", platform = "youtube") {
     requireConfigured();
     if (!CONNECTION_ROLES.has(role)) {
       throw new YoutubeAutomationError("Only the clips channel needs to be connected.", {
@@ -511,13 +615,24 @@ export function createYoutubeAutomationService({
         code: "invalid_channel_role",
       });
     }
+    const normalizedPlatform = String(platform || "youtube");
+    if (!isSupportedPlatform(normalizedPlatform)) {
+      throw new YoutubeAutomationError("Ravi cannot post clips to that platform.", {
+        status: 400,
+        code: "unsupported_platform",
+      });
+    }
     await retryPendingConnectionCleanup(uid, role);
+    // Every destination shares the clips profile. Zernio allows one account
+    // per platform within a profile, so one profile holds YouTube, TikTok,
+    // Instagram and the rest without collision.
     const zernioProfileId = await ensureProfile(uid, role);
     const state = randomBytes(32).toString("base64url");
     await store.sweepOauthStates(now());
     await store.createOauthState(state, {
       uid,
       role,
+      platform: normalizedPlatform,
       zernioProfileId,
       createdAt: now(),
       expiresAt: now() + config.oauthStateTtlMs,
@@ -526,9 +641,13 @@ export function createYoutubeAutomationService({
     callback.searchParams.set("state", state);
     callback.searchParams.set("role", role);
     try {
-      const connection = await zernio.getConnectUrl(zernioProfileId, callback.toString());
+      const connection = await zernio.getConnectUrl(
+        zernioProfileId,
+        callback.toString(),
+        normalizedPlatform
+      );
       if (!connection?.authUrl) throw new Error("Missing Zernio authUrl.");
-      return { url: connection.authUrl, state, role };
+      return { url: connection.authUrl, state, role, platform: normalizedPlatform };
     } catch (error) {
       await store.consumeOauthState(state).catch(() => {});
       throw error;
@@ -557,8 +676,11 @@ export function createYoutubeAutomationService({
         code: "invalid_oauth_state",
       });
     }
-    if (oauthError || connected !== "youtube") {
-      throw new YoutubeAutomationError("YouTube channel access was not granted through Zernio.", {
+    // States written before multi-platform destinations carry no platform.
+    const pendingPlatform = pending.platform || "youtube";
+    const platformLabel = PLATFORMS[pendingPlatform]?.label || pendingPlatform;
+    if (oauthError || connected !== pendingPlatform) {
+      throw new YoutubeAutomationError(`${platformLabel} access was not granted through Zernio.`, {
         status: 400,
         code: "zernio_oauth_denied",
       });
@@ -599,15 +721,58 @@ export function createYoutubeAutomationService({
     }
     const account = await zernio.findAccountById(connectedAccountId, {
       profileId: pending.zernioProfileId,
-      platform: "youtube",
+      platform: pendingPlatform,
     });
     if (!account || profileIdOf(account) !== pending.zernioProfileId) {
-      throw new YoutubeAutomationError("Ravi could not verify the connected YouTube channel.", {
+      throw new YoutubeAutomationError(`Ravi could not verify the connected ${platformLabel} account.`, {
         status: 400,
         code: "zernio_account_mismatch",
       });
     }
     const health = await zernio.getAccountHealth(connectedAccountId).catch(() => null);
+
+    // Every destination other than the YouTube clips channel is stored in the
+    // destinations list. The YouTube path below is left exactly as it was,
+    // since the whole setup and same-channel validation hangs off it.
+    if (pendingPlatform !== "youtube") {
+      const destination = destinationFromAccount(account, pendingPlatform, now(), health);
+      if (destination.needsReauth) {
+        await cleanupRejectedConnection(
+          pending.uid,
+          pending.role,
+          pending.zernioProfileId,
+          destination.accountId
+        );
+        throw new YoutubeAutomationError(
+          `This ${platformLabel} account did not grant the permissions Ravi needs.`,
+          { status: 409, code: "zernio_channel_unhealthy" }
+        );
+      }
+      const updated = await store.update(pending.uid, (value) => {
+        value = withDefaults(value, pending.uid);
+        if (value.zernioProfiles[pending.role] !== pending.zernioProfileId) {
+          throw new YoutubeAutomationError("This connection no longer matches your Ravi profile.", {
+            status: 409,
+            code: "zernio_profile_mismatch",
+          });
+        }
+        // Reconnecting the same platform replaces the old account rather than
+        // accumulating a second entry Zernio would reject anyway.
+        value.destinations = [
+          ...value.destinations.filter((entry) => entry.platform !== pendingPlatform),
+          destination,
+        ];
+        value.lastError = null;
+        addActivity(value, {
+          type: "connection",
+          status: "success",
+          message: `Connected ${platformLabel}: ${destination.title}`,
+        }, now());
+        return value;
+      });
+      return { role: pending.role, platform: pendingPlatform, record: updated };
+    }
+
     const channel = channelFromAccount(account, pending.role, now(), health);
     if (channel.needsReauth) {
       await cleanupRejectedConnection(
@@ -1241,16 +1406,31 @@ export function createYoutubeAutomationService({
           });
         }
         const requestId = stableUuid(`ravi-post:${uid}:${job.sourceVideoId}:${clip.index}`);
+        // One request covers every destination: Zernio's platforms array fans
+        // a single post out, so the idempotency key stays per clip rather than
+        // per clip per platform.
+        const postDestinations = [
+          { platform: "youtube", accountId: destinationId },
+          ...record.destinations,
+        ];
         let response;
         try {
-          response = await zernio.createYoutubePost({
-            accountId: destinationId,
+          response = await zernio.createClipPost({
+            destinations: postDestinations,
             mediaUrl,
-            title: String(clip.title || `Clip ${clip.index}`).trim().slice(0, 100),
-            description: `Created by Ravi from "${job.sourceTitle || job.sourceTitleHint || "a main-channel upload"}".\n\nOriginal video: https://www.youtube.com/watch?v=${job.sourceVideoId}`,
-            visibility: privacyStatus,
-            madeForKids: publicationSettings.madeForKids,
-            containsSyntheticMedia: false,
+            title: String(clip.title || `Clip ${clip.index}`),
+            platformOptions: {
+              youtube: {
+                // YouTube's body is a description, not a caption, so it keeps
+                // the attribution and source link the social captions omit.
+                content: `Created by Ravi from "${job.sourceTitle || job.sourceTitleHint || "a main-channel upload"}".\n\nOriginal video: https://www.youtube.com/watch?v=${job.sourceVideoId}`,
+                visibility: privacyStatus,
+                madeForKids: publicationSettings.madeForKids,
+                // Ravi reframes and captions existing footage; it does not
+                // synthesise it. Stated rather than left to a default.
+                containsSyntheticMedia: false,
+              },
+            },
             requestId,
             signal,
           });
@@ -1442,6 +1622,48 @@ export function createYoutubeAutomationService({
     });
   }
 
+  /**
+   * Removes one extra destination. Separate from disconnect(), which owns the
+   * main and clips channels and tears down automation state with them —
+   * dropping TikTok must not pause the whole pipeline.
+   */
+  async function disconnectDestination(uid, platform) {
+    requireConfigured();
+    const normalizedPlatform = String(platform || "");
+    if (!isSupportedPlatform(normalizedPlatform) || normalizedPlatform === "youtube") {
+      throw new YoutubeAutomationError("Choose a connected destination to remove.", {
+        status: 400,
+        code: "invalid_destination",
+      });
+    }
+    const next = await store.update(uid, async (value) => {
+      value = withDefaults(value, uid);
+      const removed = value.destinations.find((entry) => entry.platform === normalizedPlatform);
+      if (!removed) {
+        throw new YoutubeAutomationError("That destination is not connected.", {
+          status: 404,
+          code: "destination_not_found",
+        });
+      }
+      try {
+        await zernio.disconnectAccount(removed.accountId);
+      } catch (error) {
+        // Already gone on Zernio's side is the desired end state.
+        if (error?.status !== 404) throw error;
+      }
+      value.destinations = value.destinations.filter(
+        (entry) => entry.platform !== normalizedPlatform
+      );
+      addActivity(value, {
+        type: "connection",
+        status: "paused",
+        message: `Disconnected ${PLATFORMS[normalizedPlatform].label}.`,
+      }, now());
+      return value;
+    });
+    return publicStatus(next, config);
+  }
+
   async function disconnect(uid, role) {
     requireConfigured();
     if (!CHANNEL_ROLES.has(role)) {
@@ -1529,6 +1751,7 @@ export function createYoutubeAutomationService({
     setSourceChannel,
     update,
     disconnect,
+    disconnectDestination,
     pollUser,
     pollAll,
     publishJob,

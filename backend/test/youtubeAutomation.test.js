@@ -129,15 +129,27 @@ function createFakeZernio(overrides = {}) {
       const profileId = name.endsWith("-main") ? MAIN_PROFILE_ID : CLIPS_PROFILE_ID;
       return { profiles: [{ _id: profileId, name }] };
     },
-    async getConnectUrl(profileId, redirectUrl) {
-      calls.connect.push({ profileId, redirectUrl });
+    async getConnectUrl(profileId, redirectUrl, platform = "youtube") {
+      calls.connect.push({ profileId, redirectUrl, platform });
       return {
-        authUrl: `https://zernio.example/connect/youtube?profileId=${encodeURIComponent(profileId)}`,
+        authUrl: `https://zernio.example/connect/${platform}?profileId=${encodeURIComponent(profileId)}`,
       };
     },
     async findAccountById(accountId, options) {
       calls.findAccount.push({ accountId, options });
-      return account(accountId);
+      const platform = options?.platform || "youtube";
+      // Zernio returns the account for the platform that was asked for.
+      return platform === "youtube"
+        ? account(accountId)
+        : {
+            _id: accountId,
+            profileId: CLIPS_PROFILE_ID,
+            platform,
+            username: `@ravi-${platform}`,
+            displayName: `Ravi on ${platform}`,
+            profileUrl: `https://${platform}.example/@ravi`,
+            isActive: true,
+          };
     },
     async getAccountHealth(accountId) {
       calls.health.push({ accountId });
@@ -178,6 +190,19 @@ function createFakeZernio(overrides = {}) {
           _id: "zernio-post-1",
           status: "publishing",
           platforms: [{ platform: "youtube", status: "publishing" }],
+        },
+      };
+    },
+    async createClipPost(payload) {
+      calls.createPost.push(structuredClone({ ...payload, signal: undefined }));
+      return {
+        post: {
+          _id: "zernio-post-1",
+          status: "publishing",
+          platforms: (payload.destinations || []).map((destination) => ({
+            platform: destination.platform,
+            status: "publishing",
+          })),
         },
       };
     },
@@ -996,8 +1021,8 @@ test("a detected upload keeps its snapshotted YouTube publication settings", asy
   });
 
   assert.equal(zernio.calls.createPost.length, 1);
-  assert.equal(zernio.calls.createPost[0].visibility, "private");
-  assert.equal(zernio.calls.createPost[0].madeForKids, false);
+  assert.equal(zernio.calls.createPost[0].platformOptions.youtube.visibility, "private");
+  assert.equal(zernio.calls.createPost[0].platformOptions.youtube.madeForKids, false);
 });
 
 test("a public-feed failure is retryable without disabling Ravi or asking for reauthorization", async (t) => {
@@ -1125,30 +1150,35 @@ test("publishing uploads media through Zernio and reconciles the YouTube link", 
     path.join(jobDir, "clips", "clip_1.mp4")
   );
   assert.equal(zernio.calls.createPost.length, 1);
+  const youtubeOptions = zernio.calls.createPost[0].platformOptions.youtube;
   assert.deepEqual(
     {
-      accountId: zernio.calls.createPost[0].accountId,
+      destinations: zernio.calls.createPost[0].destinations,
       mediaUrl: zernio.calls.createPost[0].mediaUrl,
       title: zernio.calls.createPost[0].title,
-      visibility: zernio.calls.createPost[0].visibility,
-      madeForKids: zernio.calls.createPost[0].madeForKids,
-      containsSyntheticMedia: zernio.calls.createPost[0].containsSyntheticMedia,
+      visibility: youtubeOptions.visibility,
+      madeForKids: youtubeOptions.madeForKids,
+      containsSyntheticMedia: youtubeOptions.containsSyntheticMedia,
     },
     {
-      accountId: CLIPS_ACCOUNT_ID,
+      // With no extra destinations connected, the clips channel is the only
+      // target and the request is what it was before fan-out existed.
+      destinations: [{ platform: "youtube", accountId: CLIPS_ACCOUNT_ID }],
       mediaUrl: "https://media.example/clip-1.mp4",
       title: "The strongest moment",
+      // The snapshotted privacy setting has to survive fan-out: a clip set to
+      // unlisted must never be published publicly.
       visibility: "unlisted",
       madeForKids: false,
       containsSyntheticMedia: false,
     }
   );
   assert.match(
-    zernio.calls.createPost[0].description,
+    youtubeOptions.content,
     new RegExp(`youtube\\.com/watch\\?v=${NEW_VIDEO_ID}$`)
   );
   assert.match(
-    zernio.calls.createPost[0].description,
+    youtubeOptions.content,
     /^Created by Ravi from "A strong source video"\./
   );
   assert.match(zernio.calls.createPost[0].requestId, /^[0-9a-f-]{36}$/);
@@ -1351,7 +1381,7 @@ test("a posting retry reuses the uploaded media URL instead of uploading a dupli
   });
   const zernio = createFakeZernio();
   let postAttempt = 0;
-  zernio.api.createYoutubePost = async (payload) => {
+  zernio.api.createClipPost = async (payload) => {
     zernio.calls.createPost.push(structuredClone({ ...payload, signal: undefined }));
     postAttempt += 1;
     if (postAttempt === 1) {
@@ -1420,7 +1450,7 @@ test("a multi-clip retry resumes after the accepted clip and later reconciles it
       publicUrl: `https://media.example/clip-${clipIndex}.mp4`,
     };
   };
-  zernio.api.createYoutubePost = async (payload) => {
+  zernio.api.createClipPost = async (payload) => {
     zernio.calls.createPost.push(structuredClone({ ...payload, signal: undefined }));
     postAttempt += 1;
     if (postAttempt === 2) {
@@ -1504,4 +1534,290 @@ test("a multi-clip retry resumes after the accepted clip and later reconciles it
     event.uploads["2"].youtubeUrl,
     "https://www.youtube.com/watch?v=clip2video1"
   );
+});
+
+test("connecting a destination sends the browser to that platform's OAuth", async (t) => {
+  const store = await createStore(t);
+  const zernio = createFakeZernio();
+  const service = createService({ store, zernio });
+
+  const started = await service.startOauth(UID, "clips", "tiktok");
+  const call = zernio.calls.connect.at(-1);
+  assert.equal(call.platform, "tiktok");
+  assert.equal(started.platform, "tiktok");
+  // Every destination shares the clips profile: Zernio allows one account per
+  // platform inside a profile, so they do not collide.
+  assert.equal(call.profileId, CLIPS_PROFILE_ID);
+});
+
+test("a platform Ravi cannot post a clip to is refused before Zernio is called", async (t) => {
+  const store = await createStore(t);
+  const zernio = createFakeZernio();
+  const service = createService({ store, zernio });
+
+  await assert.rejects(
+    service.startOauth(UID, "clips", "slack"),
+    (error) => error.code === "unsupported_platform" && error.status === 400
+  );
+  assert.equal(zernio.calls.connect.length, 0);
+});
+
+test("a connected destination is stored and reported without touching the clips channel", async (t) => {
+  const store = await createStore(t);
+  const zernio = createFakeZernio();
+  const service = createService({ store, zernio });
+
+  const started = await service.startOauth(UID, "clips", "tiktok");
+  const call = zernio.calls.connect.at(-1);
+  await service.completeOauth({
+    state: started.state,
+    cookieState: started.state,
+    connected: "tiktok",
+    profileId: call.profileId,
+    accountId: "zernio-tiktok-account",
+  });
+
+  const status = await service.status(UID);
+  assert.equal(status.destinations.length, 1);
+  assert.deepEqual(
+    { platform: status.destinations[0].platform, accountId: status.destinations[0].accountId },
+    { platform: "tiktok", accountId: "zernio-tiktok-account" }
+  );
+  assert.equal(status.destinations[0].label, "TikTok");
+  // The YouTube clips channel is a separate concern and must be untouched.
+  assert.equal(status.clipsChannel, null);
+});
+
+test("an OAuth callback for a different platform than was started is rejected", async (t) => {
+  const store = await createStore(t);
+  const zernio = createFakeZernio();
+  const service = createService({ store, zernio });
+
+  const started = await service.startOauth(UID, "clips", "tiktok");
+  const call = zernio.calls.connect.at(-1);
+  await assert.rejects(
+    service.completeOauth({
+      state: started.state,
+      cookieState: started.state,
+      connected: "instagram",
+      profileId: call.profileId,
+      accountId: "zernio-instagram-account",
+    }),
+    (error) => error.code === "zernio_oauth_denied"
+  );
+});
+
+test("reconnecting a destination replaces it rather than adding a second", async (t) => {
+  const store = await createStore(t);
+  const zernio = createFakeZernio();
+  const service = createService({ store, zernio });
+
+  for (const accountId of ["tiktok-account-1", "tiktok-account-2"]) {
+    const started = await service.startOauth(UID, "clips", "tiktok");
+    const call = zernio.calls.connect.at(-1);
+    await service.completeOauth({
+      state: started.state,
+      cookieState: started.state,
+      connected: "tiktok",
+      profileId: call.profileId,
+      accountId,
+    });
+  }
+
+  const status = await service.status(UID);
+  assert.equal(status.destinations.length, 1);
+  assert.equal(status.destinations[0].accountId, "tiktok-account-2");
+});
+
+test("removing a destination releases the Zernio account and leaves automation alone", async (t) => {
+  const store = await createStore(t);
+  const zernio = createFakeZernio();
+  const service = createService({ store, zernio });
+
+  const started = await service.startOauth(UID, "clips", "tiktok");
+  const call = zernio.calls.connect.at(-1);
+  await service.completeOauth({
+    state: started.state,
+    cookieState: started.state,
+    connected: "tiktok",
+    profileId: call.profileId,
+    accountId: "zernio-tiktok-account",
+  });
+
+  const status = await service.disconnectDestination(UID, "tiktok");
+  assert.equal(status.destinations.length, 0);
+  // The slot must be handed back, or it is consumed on the plan forever.
+  assert.ok(zernio.calls.disconnect.some((entry) => entry.accountId === "zernio-tiktok-account"));
+});
+
+test("the YouTube clips channel cannot be dropped through the destination route", async (t) => {
+  const store = await createStore(t);
+  const zernio = createFakeZernio();
+  const service = createService({ store, zernio });
+
+  // disconnect() owns that channel and tears down automation state with it.
+  await assert.rejects(
+    service.disconnectDestination(UID, "youtube"),
+    (error) => error.code === "invalid_destination"
+  );
+  await assert.rejects(
+    service.disconnectDestination(UID, "tiktok"),
+    (error) => error.code === "destination_not_found" && error.status === 404
+  );
+});
+
+test("records written before destinations existed still load", async (t) => {
+  const store = await createStore(t);
+  const zernio = createFakeZernio();
+  const service = createService({ store, zernio });
+
+  await store.update(UID, (record) => {
+    record.version = 4;
+    delete record.destinations;
+    return record;
+  });
+
+  const status = await service.status(UID);
+  assert.deepEqual(status.destinations, []);
+});
+
+test("corrupt or unusable destination entries are dropped on load", async (t) => {
+  const store = await createStore(t);
+  const zernio = createFakeZernio();
+  const service = createService({ store, zernio });
+
+  await store.update(UID, (record) => {
+    record.destinations = [
+      { platform: "tiktok", accountId: "keep-me" },
+      { platform: "slack", accountId: "no-longer-supported" },
+      { platform: "tiktok", accountId: "keep-me" },
+      { platform: "instagram" },
+      null,
+    ];
+    return record;
+  });
+
+  const status = await service.status(UID);
+  // Carrying any of these forward would fail at Zernio during a publish.
+  assert.deepEqual(
+    status.destinations.map((entry) => `${entry.platform}:${entry.accountId}`),
+    ["tiktok:keep-me"]
+  );
+});
+
+test("one clip reaches every connected destination in a single post", async (t) => {
+  const store = await createStore(t);
+  await seedConnectedChannels(store, {
+    enabled: true,
+    status: "watching",
+    enabledAt: Date.parse("2026-08-30T12:00:00Z"),
+    settings: {
+      numClips: 1,
+      clipLengthSec: 45,
+      cropMode: "pad",
+      subtitleColor: "#FFFFFF",
+      privacyStatus: "unlisted",
+      madeForKids: false,
+    },
+    destinations: [
+      { platform: "tiktok", accountId: "tiktok-account" },
+      { platform: "instagram", accountId: "instagram-account" },
+    ],
+    events: {
+      [NEW_VIDEO_ID]: {
+        status: "processing",
+        sourceVideoId: NEW_VIDEO_ID,
+        sourceTitle: "A strong source video",
+        jobId: "job-1",
+      },
+    },
+  });
+  const zernio = createFakeZernio();
+  const service = createService({ store, zernio });
+
+  const jobDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ravi-fanout-test-"));
+  t.after(() => fs.promises.rm(jobDir, { recursive: true, force: true }));
+  await fs.promises.mkdir(path.join(jobDir, "clips"), { recursive: true });
+  await fs.promises.writeFile(path.join(jobDir, "clips", "clip_1.mp4"), "rendered-video");
+
+  const submitted = await service.publishJob({
+    uid: UID,
+    job: {
+      id: "job-1",
+      sourceVideoId: NEW_VIDEO_ID,
+      sourceTitle: "A strong source video",
+      clips: [{ index: 1, title: "The strongest moment" }],
+    },
+    jobDir,
+    signal: new AbortController().signal,
+  });
+
+  // One request, not one per platform: Zernio fans the post out itself, so the
+  // media is uploaded once and the idempotency key stays per clip.
+  assert.equal(zernio.calls.createPost.length, 1);
+  assert.equal(zernio.calls.upload.length, 1);
+  const call = zernio.calls.createPost[0];
+  assert.deepEqual(
+    call.destinations.map((destination) => destination.platform),
+    ["youtube", "tiktok", "instagram"]
+  );
+
+  // The extra destinations are reported back per platform, because one
+  // failing must not be read as the whole clip failing.
+  assert.deepEqual(
+    submitted.published[0].destinations.map((entry) => entry.platform),
+    ["tiktok", "instagram"]
+  );
+});
+
+test("fan-out gives social destinations the short title, not YouTube's description", async (t) => {
+  const store = await createStore(t);
+  await seedConnectedChannels(store, {
+    enabled: true,
+    status: "watching",
+    enabledAt: Date.parse("2026-08-30T12:00:00Z"),
+    settings: {
+      numClips: 1,
+      clipLengthSec: 45,
+      cropMode: "pad",
+      subtitleColor: "#FFFFFF",
+      privacyStatus: "public",
+      madeForKids: false,
+    },
+    destinations: [{ platform: "tiktok", accountId: "tiktok-account" }],
+    events: {
+      [NEW_VIDEO_ID]: {
+        status: "processing",
+        sourceVideoId: NEW_VIDEO_ID,
+        sourceTitle: "A strong source video",
+        jobId: "job-1",
+      },
+    },
+  });
+  const zernio = createFakeZernio();
+  const service = createService({ store, zernio });
+
+  const jobDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ravi-caption-test-"));
+  t.after(() => fs.promises.rm(jobDir, { recursive: true, force: true }));
+  await fs.promises.mkdir(path.join(jobDir, "clips"), { recursive: true });
+  await fs.promises.writeFile(path.join(jobDir, "clips", "clip_1.mp4"), "rendered-video");
+
+  await service.publishJob({
+    uid: UID,
+    job: {
+      id: "job-1",
+      sourceVideoId: NEW_VIDEO_ID,
+      sourceTitle: "A strong source video",
+      clips: [{ index: 1, title: '"He never saw it coming"' }],
+    },
+    jobDir,
+    signal: new AbortController().signal,
+  });
+
+  const call = zernio.calls.createPost[0];
+  // YouTube's body stays a description carrying attribution and the source
+  // link; that is not a caption and must not leak onto TikTok.
+  assert.match(call.platformOptions.youtube.content, /^Created by Ravi from/);
+  assert.equal(call.title, '"He never saw it coming"');
+  assert.equal(call.platformOptions.tiktok, undefined);
 });

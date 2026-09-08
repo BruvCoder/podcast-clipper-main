@@ -361,3 +361,141 @@ test("network failures, explicit timeouts, and caller cancellation have structur
   );
   assert.equal(called, false);
 });
+
+test("connecting a destination targets that platform's own OAuth endpoint", async () => {
+  const seen = [];
+  const api = testClient(async (url) => {
+    seen.push(new URL(url));
+    return jsonResponse({ authUrl: "https://zernio.example/oauth" });
+  });
+
+  await api.getConnectUrl("profile-1", "https://api.vod-clipper.com/callback", "tiktok");
+  assert.equal(seen[0].pathname, "/api/v1/connect/tiktok");
+  assert.equal(seen[0].searchParams.get("profileId"), "profile-1");
+  assert.equal(
+    seen[0].searchParams.get("redirect_url"),
+    "https://api.vod-clipper.com/callback"
+  );
+
+  // The existing YouTube flow must keep working without passing a platform.
+  await api.getConnectUrl("profile-1", "https://api.vod-clipper.com/callback");
+  assert.equal(seen[1].pathname, "/api/v1/connect/youtube");
+});
+
+test("connecting refuses a platform Ravi cannot publish a clip to", async () => {
+  const api = testClient(async () => {
+    throw new Error("must not reach the network for an unsupported platform");
+  });
+  await assert.rejects(
+    api.getConnectUrl("profile-1", "https://example.com/cb", "slack"),
+    (error) => error instanceof ZernioApiError && error.code === "unsupported_platform"
+  );
+});
+
+test("one clip fans out to every destination in a single post", async () => {
+  let body;
+  const api = testClient(async (url, init) => {
+    body = JSON.parse(init.body);
+    return jsonResponse({ _id: "post-1", status: "publishing" });
+  });
+
+  await api.createClipPost({
+    destinations: [
+      { platform: "youtube", accountId: "acc-yt" },
+      { platform: "tiktok", accountId: "acc-tt" },
+    ],
+    mediaUrl: "https://cdn.example/clip.mp4",
+    title: "Episode highlight",
+  });
+
+  assert.equal(body.platforms.length, 2);
+  assert.deepEqual(body.platforms.map((target) => target.platform), ["youtube", "tiktok"]);
+  assert.deepEqual(body.mediaItems, [{ type: "video", url: "https://cdn.example/clip.mp4" }]);
+  // No schedule means publish immediately.
+  assert.equal(body.publishNow, true);
+  assert.equal("scheduledFor" in body, false);
+});
+
+test("a scheduled clip hands the timing to Zernio instead of publishing now", async () => {
+  let body;
+  const api = testClient(async (url, init) => {
+    body = JSON.parse(init.body);
+    return jsonResponse({ _id: "post-2", status: "scheduled" });
+  });
+
+  const when = new Date(Date.now() + 60 * 60 * 1000);
+  await api.createClipPost({
+    destinations: [{ platform: "tiktok", accountId: "acc-tt" }],
+    mediaUrl: "https://cdn.example/clip.mp4",
+    title: "Later",
+    scheduledFor: when,
+    timezone: "Europe/Istanbul",
+  });
+
+  // Scheduling lives on Zernio's side so a pending post survives this
+  // container being redeployed.
+  assert.equal(body.scheduledFor, when.toISOString());
+  assert.equal(body.timezone, "Europe/Istanbul");
+  assert.equal("publishNow" in body, false);
+});
+
+test("a schedule in the past is refused rather than published immediately", async () => {
+  const api = testClient(async () => {
+    throw new Error("must not post a clip scheduled for the past");
+  });
+
+  // Zernio would publish this straight away, which is not what someone who
+  // mistyped a date expects to happen.
+  await assert.rejects(
+    api.createClipPost({
+      destinations: [{ platform: "tiktok", accountId: "acc-tt" }],
+      mediaUrl: "https://cdn.example/clip.mp4",
+      scheduledFor: new Date(Date.now() - 1000),
+    }),
+    (error) => error instanceof ZernioApiError && error.code === "invalid_zernio_request"
+  );
+
+  await assert.rejects(
+    api.createClipPost({
+      destinations: [{ platform: "tiktok", accountId: "acc-tt" }],
+      mediaUrl: "https://cdn.example/clip.mp4",
+      scheduledFor: "not a date",
+    }),
+    (error) => error instanceof ZernioApiError && error.code === "invalid_zernio_request"
+  );
+});
+
+test("posting with no usable destination never reaches the network", async () => {
+  const api = testClient(async () => {
+    throw new Error("must not post without a destination");
+  });
+  await assert.rejects(
+    api.createClipPost({
+      destinations: [{ platform: "slack", accountId: "acc" }],
+      mediaUrl: "https://cdn.example/clip.mp4",
+    }),
+    (error) => error instanceof ZernioApiError && error.code === "invalid_zernio_request"
+  );
+});
+
+test("the posted caption is the cleaned clip title", async () => {
+  let body;
+  const api = testClient(async (url, init) => {
+    body = JSON.parse(init.body);
+    return jsonResponse({ _id: "post-3", status: "publishing" });
+  });
+
+  await api.createClipPost({
+    destinations: [
+      { platform: "tiktok", accountId: "acc-tt" },
+      { platform: "youtube", accountId: "acc-yt" },
+    ],
+    mediaUrl: "https://cdn.example/clip.mp4",
+    title: '  "He never saw it coming"  ',
+  });
+
+  // Quotes and padding from the moment picker must not reach the platforms.
+  assert.equal(body.content, "He never saw it coming");
+  assert.equal(body.platforms[0].customContent, "He never saw it coming");
+  assert.equal(body.platforms[1].platformSpecificData.title, "He never saw it coming");
+});

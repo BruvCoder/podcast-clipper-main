@@ -1,6 +1,13 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 
+import {
+  PLATFORMS,
+  buildPlatformTargets,
+  isSupportedPlatform,
+  shortCaption,
+} from "./socialPlatforms.js";
+
 export const DEFAULT_ZERNIO_BASE_URL = "https://zernio.com/api/v1";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 20_000;
@@ -323,13 +330,25 @@ export function createZernioApi({
     return request("/profiles", { query, operation: "Listing Zernio profiles" });
   }
 
-  async function getConnectUrl(profileId, redirectUrl) {
-    return request("/connect/youtube", {
+  /**
+   * Starts an OAuth connection. The endpoint is per-platform by path, and on
+   * return Zernio appends connected/platform/accountId/username to
+   * redirectUrl, or error/platform if it failed.
+   */
+  async function getConnectUrl(profileId, redirectUrl, platform = "youtube") {
+    const normalizedPlatform = requireString(platform, "Platform");
+    if (!isSupportedPlatform(normalizedPlatform)) {
+      throw new ZernioApiError(`${normalizedPlatform} is not a supported destination.`, {
+        status: 400,
+        code: "unsupported_platform",
+      });
+    }
+    return request(`/connect/${encodeURIComponent(normalizedPlatform)}`, {
       query: {
         profileId: requireString(profileId, "Profile ID"),
         redirect_url: requireString(redirectUrl, "Redirect URL"),
       },
-      operation: "Starting the YouTube connection",
+      operation: `Starting the ${PLATFORMS[normalizedPlatform].label} connection`,
     });
   }
 
@@ -561,6 +580,77 @@ export function createZernioApi({
     });
   }
 
+  /**
+   * Publishes or schedules one clip to any number of destinations at once.
+   *
+   * Scheduling is Zernio's, not ours: passing scheduledFor hands it the timing,
+   * so a pending post survives this process restarting. A queue held in memory
+   * here would not — the container is redeployed regularly and jobs live in RAM.
+   *
+   * Omitting both scheduledFor and publishNow leaves the post as a draft, which
+   * is Zernio's documented third mode.
+   */
+  async function createClipPost({
+    destinations = [],
+    mediaUrl,
+    title = "",
+    platformOptions = {},
+    scheduledFor = null,
+    timezone = null,
+    tags = [],
+    requestId,
+    signal,
+  }) {
+    const platforms = buildPlatformTargets({ destinations, title, platformOptions });
+    if (!platforms.length) {
+      throw new ZernioApiError("At least one valid destination is required.", {
+        status: 400,
+        code: "invalid_zernio_request",
+      });
+    }
+
+    const body = {
+      // The clip's own short title is the caption, the same on every platform.
+      content: shortCaption(title),
+      mediaItems: [{ type: "video", url: requireString(mediaUrl, "Media URL") }],
+      platforms,
+    };
+
+    if (scheduledFor) {
+      const when = new Date(scheduledFor);
+      if (Number.isNaN(when.getTime())) {
+        throw new ZernioApiError("Scheduled time must be a valid date.", {
+          status: 400,
+          code: "invalid_zernio_request",
+        });
+      }
+      // A time already past would publish immediately on Zernio's side, which
+      // is not what "schedule" means to someone who mistyped a date.
+      if (when.getTime() <= Date.now()) {
+        throw new ZernioApiError("Scheduled time must be in the future.", {
+          status: 400,
+          code: "invalid_zernio_request",
+        });
+      }
+      body.scheduledFor = when.toISOString();
+      if (timezone) body.timezone = String(timezone);
+    } else {
+      body.publishNow = true;
+    }
+
+    if (Array.isArray(tags) && tags.length) {
+      body.tags = tags.map((tag) => String(tag).trim()).filter(Boolean);
+    }
+
+    return request("/posts", {
+      method: "POST",
+      body,
+      headers: { "x-request-id": requireString(requestId || idFactory(), "Request ID") },
+      signal,
+      operation: scheduledFor ? "Scheduling the clip" : "Publishing the clip",
+    });
+  }
+
   async function getPost(postId) {
     const id = encodeURIComponent(requireString(postId, "Post ID"));
     return request(`/posts/${id}`, { operation: "Checking the published clip" });
@@ -580,6 +670,7 @@ export function createZernioApi({
     createMediaPresign,
     uploadFile,
     createYoutubePost,
+    createClipPost,
     getPost,
   };
 }
