@@ -5,6 +5,8 @@ import {
 } from "../sourceChannelDraft.js";
 import { isValidYouTubeChannelUrl, normalizeYouTubeChannelUrl } from "../youtube.js";
 import YouTubeIcon from "./YouTubeIcon.jsx";
+import Destinations from "./Destinations.jsx";
+import UploadPanel from "./UploadPanel.jsx";
 
 const SUBTITLE_COLORS = ["#FFFFFF", "#FFE94A", "#72F1B8", "#64B5FF"];
 
@@ -127,6 +129,9 @@ export default function AutomationDashboard({
   onUpdate,
   onCheckNow,
   onDisconnect,
+  onConnectDestination,
+  onDisconnectDestination,
+  onUpload,
 }) {
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [certifications, setCertifications] = useState(DEFAULT_CERTIFICATIONS);
@@ -389,6 +394,19 @@ export default function AutomationDashboard({
             : "Add your main channel and connect a different clips channel. Ravi starts with the next public upload after you turn watching on; existing videos are not backfilled."}
         </p>
       </section>
+
+      <Destinations
+        automation={automation}
+        action={action}
+        onConnectDestination={onConnectDestination}
+        onDisconnectDestination={onDisconnectDestination}
+      />
+
+      <UploadPanel
+        onUpload={onUpload}
+        disabled={!sourceReady && !clipsReady}
+        disabledReason="Connect a clips channel or another destination first, so Ravi has somewhere to post."
+      />
 
       <div className="automation-columns">
         <section className="automation-card" aria-labelledby="clip-settings-title">

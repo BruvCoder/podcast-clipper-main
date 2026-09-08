@@ -65,6 +65,15 @@ test("a client filename becomes a title and never a path", () => {
   assert.equal(displayTitleFromFilename(".mp4"), "Uploaded video");
 });
 
+test("a percent-encoded filename is decoded", () => {
+  // HTTP header values are Latin-1, so the client encodes the name; an accent
+  // or an emoji cannot be sent raw.
+  assert.equal(displayTitleFromFilename("%C3%A9pisode%20deux.mp4"), "épisode deux");
+  // A literal % that is not valid encoding must not throw or blank the title.
+  assert.equal(displayTitleFromFilename("100%25 real.mp4"), "100% real");
+  assert.equal(displayTitleFromFilename("50%off.mp4"), "50%off");
+});
+
 test("control characters are stripped from an uploaded title", () => {
   // These would corrupt logs and job.json if stored verbatim.
   assert.equal(displayTitleFromFilename("ep\u0000one\u001f.mp4"), "ep one");

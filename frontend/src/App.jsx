@@ -17,6 +17,7 @@ import {
 import {
   checkYoutubeNow,
   deleteJob,
+  disconnectDestination,
   disconnectYoutube,
   getJob,
   getYoutubeAutomation,
@@ -24,6 +25,7 @@ import {
   setYoutubeSourceChannel,
   startYoutubeOAuth,
   updateYoutubeAutomation,
+  uploadVideo,
 } from "./api.js";
 
 const THEME_KEY = "pc-theme";
@@ -341,6 +343,43 @@ export default function App() {
     }
   }
 
+  async function handleConnectDestination(platform) {
+    setAutomationAction(`connecting-${platform}`);
+    setAutomationError(null);
+    setAutomationNotice(null);
+    try {
+      // Destinations share the clips role; the platform decides which OAuth
+      // flow Zernio opens.
+      window.location.assign(await startYoutubeOAuth("clips", platform));
+    } catch (error) {
+      setAutomationError(error.message);
+      setAutomationAction(null);
+    }
+  }
+
+  async function handleDisconnectDestination(platform) {
+    setAutomationAction("saving");
+    setAutomationError(null);
+    setAutomationNotice(null);
+    try {
+      setAutomation(await disconnectDestination(platform));
+      setAutomationNotice("That destination has been disconnected.");
+    } catch (error) {
+      setAutomationError(error.message);
+    } finally {
+      setAutomationAction(null);
+    }
+  }
+
+  async function handleUploadVideo(file, { onProgress, signal } = {}) {
+    const jobId = await uploadVideo(file, { onProgress, signal });
+    await refreshJobsList();
+    // Straight to the clip's own URL, so the upload behaves like any other
+    // clip set and the progress page is bookmarkable.
+    navigate(`/clips/${jobId}`);
+    return jobId;
+  }
+
   async function handleSetSourceYoutube(url) {
     setAutomationAction("saving-source");
     setAutomationError(null);
@@ -478,6 +517,9 @@ export default function App() {
                   onUpdate={handleUpdateAutomation}
                   onCheckNow={handleCheckNow}
                   onDisconnect={handleDisconnectYoutube}
+                  onConnectDestination={handleConnectDestination}
+                  onDisconnectDestination={handleDisconnectDestination}
+                  onUpload={handleUploadVideo}
                 />
               )}
               {route.name === "clip" && clipState === "loading" && <Loading stage={job?.stage} />}

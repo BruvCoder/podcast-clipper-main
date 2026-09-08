@@ -73,16 +73,74 @@ export async function getYoutubeAutomation() {
   return data.automation ?? data;
 }
 
-export async function startYoutubeOAuth(role) {
+export async function startYoutubeOAuth(role, platform = "youtube") {
   const res = await fetch(`${API_BASE_URL}/api/youtube/oauth/start`, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...(await authHeaders()) },
     credentials: "include",
-    body: JSON.stringify({ role }),
+    body: JSON.stringify({ role, platform }),
   });
   const data = await readJsonResponse(res, `Failed to connect your ${role} channel`);
   if (!data.url) throw new Error("The channel connection did not return a URL");
   return data.url;
+}
+
+export async function disconnectDestination(platform) {
+  const res = await fetch(`${API_BASE_URL}/api/youtube/destination/${platform}`, {
+    method: "DELETE",
+    headers: await authHeaders(),
+    credentials: "include",
+  });
+  const data = await readJsonResponse(res, "Failed to disconnect that destination");
+  return data.automation ?? data;
+}
+
+/**
+ * Sends the file as the request body.
+ *
+ * XMLHttpRequest rather than fetch, because fetch cannot report upload
+ * progress and these files run to hundreds of megabytes — without a progress
+ * bar a long upload is indistinguishable from a hung one.
+ */
+export async function uploadVideo(file, { onProgress, signal } = {}) {
+  const headers = await authHeaders();
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `${API_BASE_URL}/api/uploads`);
+    for (const [name, value] of Object.entries(headers)) xhr.setRequestHeader(name, value);
+    xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+    // Header values must be Latin-1, so a filename with an accent or an emoji
+    // would throw here. The server decodes it.
+    xhr.setRequestHeader("X-Upload-Filename", encodeURIComponent(file.name || "video"));
+
+    xhr.upload.onprogress = (event) => {
+      if (event.lengthComputable) onProgress?.(Math.round((event.loaded / event.total) * 100));
+    };
+    xhr.onload = () => {
+      let data = {};
+      try {
+        data = JSON.parse(xhr.responseText);
+      } catch {
+        // A proxy can return HTML; the fallback message below stays useful.
+      }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(data.jobId);
+        return;
+      }
+      const error = new Error(data.error || "Your video could not be uploaded");
+      error.status = xhr.status;
+      error.code = data.code || null;
+      reject(error);
+    };
+    xhr.onerror = () => reject(new Error("The upload failed. Check your connection and try again."));
+    xhr.onabort = () => {
+      const error = new Error("Upload cancelled");
+      error.code = "upload_cancelled";
+      reject(error);
+    };
+    signal?.addEventListener("abort", () => xhr.abort(), { once: true });
+    xhr.send(file);
+  });
 }
 
 export async function setYoutubeSourceChannel(url) {

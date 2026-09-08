@@ -57,7 +57,15 @@ export function isAcceptedVideoType(contentType) {
  * the server — so this only has to be safe to display and store.
  */
 export function displayTitleFromFilename(filename) {
-  const raw = String(filename || "");
+  let raw = String(filename || "");
+  // The client percent-encodes it, because HTTP header values are Latin-1 and
+  // a filename with an accent or an emoji cannot be sent raw. A name that
+  // merely contains a stray % is used as-is rather than rejected.
+  try {
+    raw = decodeURIComponent(raw);
+  } catch {
+    // Not valid percent-encoding; treat it as a literal name.
+  }
   // Take the last segment under either separator, so a full Windows or POSIX
   // path collapses to its basename rather than smuggling directories through.
   const base = raw.split(/[\\/]/).pop() || "";
