@@ -194,6 +194,16 @@ export async function createClip(
   }
 }
 
+/**
+ * Reads a file's stream types and duration via ffprobe.
+ *
+ * Also the gate on uploaded sources: a file is only a video because ffprobe
+ * says so, not because the client's Content-Type claimed it.
+ */
+export function probeMedia(filePath, signal) {
+  return probeRendered(filePath, signal);
+}
+
 /** Reads a rendered file's stream types and duration via ffprobe. */
 function probeRendered(filePath, signal) {
   signal?.throwIfAborted();

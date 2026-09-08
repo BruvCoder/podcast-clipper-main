@@ -9,7 +9,15 @@ import { randomUUID } from "crypto";
 import Stripe from "stripe";
 
 import { normalizeYouTubeUrl, prepareSource, ytDlpProxyEnabled } from "./lib/ytdlp.js";
-import { createClip, ensureDir } from "./lib/ffmpeg.js";
+import { createClip, ensureDir, probeMedia } from "./lib/ffmpeg.js";
+import {
+  UploadError,
+  describeProbedSource,
+  displayTitleFromFilename,
+  isAcceptedVideoType,
+  loadUploadConfig,
+  streamToFile,
+} from "./lib/uploadSource.js";
 import { transcribeAudio } from "./lib/groqTranscribe.js";
 import { pickClips } from "./lib/clipPicker.js";
 import { groupWordsIntoPhrases, phrasesToPromptText } from "./lib/transcript.js";
@@ -46,6 +54,7 @@ const MAX_OUTSTANDING_JOBS_PER_USER = positiveInteger(
   2
 );
 const jobLimiter = createConcurrencyLimiter(JOB_PROCESS_CONCURRENCY);
+const uploadConfig = loadUploadConfig();
 
 const billingConfig = loadStripeBillingConfig();
 const stripe = billingConfig.enabled
@@ -350,6 +359,7 @@ function jobRequestError(message, status, code) {
 function enqueueClipJob({
   uid,
   youtubeUrl,
+  upload = null,
   settings = {},
   trigger = "manual",
   sourceVideoId = null,
@@ -363,11 +373,15 @@ function enqueueClipJob({
     throw jobRequestError("This automated job is missing its account owner.", 500, "missing_job_owner");
   }
 
-  let canonicalYoutubeUrl;
-  try {
-    canonicalYoutubeUrl = normalizeYouTubeUrl(youtubeUrl);
-  } catch (error) {
-    throw jobRequestError(error.message, 400, "invalid_youtube_url");
+  // An uploaded file is already on disk and validated, so there is no URL to
+  // normalise and nothing for yt-dlp to fetch.
+  let canonicalYoutubeUrl = null;
+  if (!upload) {
+    try {
+      canonicalYoutubeUrl = normalizeYouTubeUrl(youtubeUrl);
+    } catch (error) {
+      throw jobRequestError(error.message, 400, "invalid_youtube_url");
+    }
   }
   const capacity = inspectJobCapacity(jobExecutions, jobs, uid, {
     maxTotal: MAX_OUTSTANDING_JOBS,
@@ -426,6 +440,10 @@ function enqueueClipJob({
     jobDir,
     {
       youtubeUrl: canonicalYoutubeUrl,
+      uploadDir: upload?.dir || null,
+      uploadPath: upload?.path || null,
+      uploadTitle: upload?.title || null,
+      uploadDurationSec: upload?.durationSec || null,
       numClips: n,
       clipLengthSec: len,
       subtitleColor: color,
@@ -462,6 +480,71 @@ app.post("/api/jobs", requireAuth, (req, res) => {
     error: "Ravi no longer accepts individual video links. Add your main-channel link and connect the clips channel where Ravi should post.",
     code: "channel_automation_only",
   });
+});
+
+const UPLOAD_EXTENSIONS = new Set(["mp4", "mov", "mkv", "webm", "m4v", "avi"]);
+
+function uploadFilename(clientName) {
+  const extension = String(clientName || "").split(".").pop()?.toLowerCase() || "";
+  // The name is server-chosen; only a known-safe extension is carried over,
+  // and ffmpeg identifies the format from the content regardless.
+  return UPLOAD_EXTENSIONS.has(extension) ? `source.${extension}` : "source";
+}
+
+// The file is the request body rather than a multipart part: a browser can
+// send a File directly, so there is no boundary to parse and nothing buffers
+// in memory on the way to disk.
+app.post("/api/uploads", requireAuth, async (req, res, next) => {
+  if (!isAcceptedVideoType(req.get("content-type"))) {
+    return res.status(415).json({
+      error: "Upload a video file.",
+      code: "unsupported_upload_type",
+    });
+  }
+  // Checked before a byte is read: letting a large upload finish only to be
+  // refused would spend the bandwidth for nothing.
+  const capacity = inspectJobCapacity(jobExecutions, jobs, req.uid, {
+    maxTotal: MAX_OUTSTANDING_JOBS,
+    maxPerUser: MAX_OUTSTANDING_JOBS_PER_USER,
+  });
+  if (!capacity.available) {
+    return res.status(429).json({
+      error: "You already have clips being made. Wait for those to finish first.",
+      code: "job_capacity_reached",
+    });
+  }
+
+  const title = displayTitleFromFilename(req.get("x-upload-filename"));
+  let uploadDir = null;
+  try {
+    uploadDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ravi-upload-"));
+    const uploadPath = path.join(uploadDir, uploadFilename(req.get("x-upload-filename")));
+    await streamToFile(req, uploadPath, { maxBytes: uploadConfig.maxBytes });
+
+    // Content-Type was the client's claim; this is the actual check.
+    const probed = describeProbedSource(await probeMedia(uploadPath), {
+      maxDurationSec: uploadConfig.maxDurationSec,
+    });
+
+    const jobId = enqueueClipJob({
+      uid: req.uid,
+      upload: { dir: uploadDir, path: uploadPath, title, durationSec: probed.durationSec },
+      settings: req.query,
+      trigger: "upload",
+      sourceTitle: title,
+    });
+    // Ownership passes to the job, whose cleanup removes the directory.
+    uploadDir = null;
+    return res.status(202).json({ jobId });
+  } catch (error) {
+    if (uploadDir) {
+      await fs.promises.rm(uploadDir, { recursive: true, force: true }).catch(() => {});
+    }
+    if (error instanceof UploadError) {
+      return res.status(error.status).json({ error: error.message, code: error.code });
+    }
+    return next(error);
+  }
 });
 
 app.get("/api/jobs", requireAuth, (req, res) => {
@@ -527,7 +610,19 @@ app.delete("/api/jobs/:id", requireAuth, async (req, res, next) => {
 async function runPipeline(
   id,
   jobDir,
-  { youtubeUrl, numClips, clipLengthSec, subtitleColor, cropMode, trigger, sourceVideoId },
+  {
+    youtubeUrl,
+    uploadDir,
+    uploadPath,
+    uploadTitle,
+    uploadDurationSec,
+    numClips,
+    clipLengthSec,
+    subtitleColor,
+    cropMode,
+    trigger,
+    sourceVideoId,
+  },
   signal
 ) {
   let releaseJobSlot = null;
@@ -536,18 +631,29 @@ async function runPipeline(
   try {
     releaseJobSlot = await jobLimiter.acquire(signal);
     signal.throwIfAborted();
-    // Keep multi-gigabyte temporary sources off the persistent job-history
-    // volume. The OS temp filesystem is discarded with the container, while
-    // only validated rendered clips and job.json remain durable.
-    sourceWorkDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), `vod-source-${id}-`));
-    updateJob(id, { status: "running", stage: "Fetching video info with yt-dlp" });
-    const prepared = await prepareSource(youtubeUrl, sourceWorkDir, (line) => {
-      const stage =
-        typeof line === "string" && line.trim() ? line.trim().slice(0, 160) : "Downloading source";
-      updateJob(id, { stage });
-    }, { signal });
-    sourcePath = prepared.sourcePath;
-    const { info } = prepared;
+    let info;
+    if (uploadPath) {
+      // The file is already on disk and already probed by the upload route.
+      // Adopting its directory as the work dir means the existing cleanup
+      // removes it, so an upload cannot outlive its job.
+      sourceWorkDir = uploadDir;
+      sourcePath = uploadPath;
+      info = { title: uploadTitle, durationSec: uploadDurationSec };
+      updateJob(id, { status: "running", stage: "Transcribing audio" });
+    } else {
+      // Keep multi-gigabyte temporary sources off the persistent job-history
+      // volume. The OS temp filesystem is discarded with the container, while
+      // only validated rendered clips and job.json remain durable.
+      sourceWorkDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), `vod-source-${id}-`));
+      updateJob(id, { status: "running", stage: "Fetching video info with yt-dlp" });
+      const prepared = await prepareSource(youtubeUrl, sourceWorkDir, (line) => {
+        const stage =
+          typeof line === "string" && line.trim() ? line.trim().slice(0, 160) : "Downloading source";
+        updateJob(id, { stage });
+      }, { signal });
+      sourcePath = prepared.sourcePath;
+      info = prepared.info;
+    }
     signal.throwIfAborted();
     updateJob(id, { sourceTitle: info.title, stage: "Transcribing audio" });
 
