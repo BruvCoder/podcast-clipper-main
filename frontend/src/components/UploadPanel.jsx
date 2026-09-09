@@ -57,7 +57,7 @@ export default function UploadPanel({ onUpload, disabled, disabledReason }) {
   }
 
   return (
-    <section className="card upload-card">
+    <section className="automation-card upload-card">
       <div className="upload-head">
         <h2>Upload a video</h2>
         <p className="upload-lede">

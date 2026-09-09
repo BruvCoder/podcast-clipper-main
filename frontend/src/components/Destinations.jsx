@@ -39,7 +39,7 @@ export default function Destinations({
   const clipCount = Number(automation?.settings?.numClips) || 3;
 
   return (
-    <section className="card destinations-card">
+    <section className="automation-card destinations-card">
       <div className="destinations-head">
         <h2>Post anywhere</h2>
         <p className="destinations-lede">

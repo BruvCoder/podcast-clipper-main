@@ -3868,7 +3868,7 @@ input[type="range"]::-moz-range-thumb {
 .destinations-lede,
 .upload-lede {
   margin: 0;
-  color: var(--text-muted, #93a2bd);
+  color: var(--text-muted);
   font-size: 0.92rem;
   line-height: 1.5;
 }
@@ -3887,9 +3887,9 @@ input[type="range"]::-moz-range-thumb {
   align-items: center;
   gap: 12px;
   padding: 12px 14px;
-  border: 1px solid var(--border, rgba(255, 255, 255, 0.09));
+  border: 1px solid var(--border);
   border-radius: 12px;
-  background: var(--surface-2, rgba(255, 255, 255, 0.03));
+  background: var(--surface-2);
 }
 
 .destination-badge {
@@ -3903,8 +3903,8 @@ input[type="range"]::-moz-range-thumb {
   font-weight: 700;
   letter-spacing: 0.02em;
   text-transform: uppercase;
-  background: rgba(120, 150, 255, 0.16);
-  color: #b9c9ff;
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 
 .destination-identity {
@@ -3922,7 +3922,7 @@ input[type="range"]::-moz-range-thumb {
 
 .destination-account {
   font-size: 0.82rem;
-  color: var(--text-muted, #93a2bd);
+  color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -3931,7 +3931,7 @@ input[type="range"]::-moz-range-thumb {
 .destination-warning {
   font-size: 0.78rem;
   font-weight: 600;
-  color: #ffb27a;
+  color: var(--danger);
   white-space: nowrap;
 }
 
@@ -3950,7 +3950,7 @@ input[type="range"]::-moz-range-thumb {
 .destination-add-label {
   font-size: 0.82rem;
   font-weight: 600;
-  color: var(--text-muted, #93a2bd);
+  color: var(--text-muted);
 }
 
 .destination-options {
@@ -3962,7 +3962,7 @@ input[type="range"]::-moz-range-thumb {
 .destination-option {
   padding: 9px 14px;
   border-radius: 999px;
-  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+  border: 1px solid var(--border);
   background: transparent;
   color: inherit;
   font: inherit;
@@ -3972,8 +3972,8 @@ input[type="range"]::-moz-range-thumb {
 }
 
 .destination-option:hover:not(:disabled) {
-  border-color: rgba(120, 150, 255, 0.5);
-  background: rgba(120, 150, 255, 0.1);
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .destination-option:disabled {
@@ -3985,13 +3985,13 @@ input[type="range"]::-moz-range-thumb {
 .upload-note {
   margin: 0;
   font-size: 0.85rem;
-  color: var(--text-muted, #93a2bd);
+  color: var(--text-muted);
 }
 
 /* --- Upload --- */
 .upload-drop {
   position: relative;
-  border: 1.5px dashed var(--border, rgba(255, 255, 255, 0.16));
+  border: 1.5px dashed var(--border-strong);
   border-radius: 14px;
   padding: 26px 18px;
   text-align: center;
@@ -3999,8 +3999,8 @@ input[type="range"]::-moz-range-thumb {
 }
 
 .upload-drop.dragging {
-  border-color: rgba(120, 150, 255, 0.7);
-  background: rgba(120, 150, 255, 0.08);
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .upload-drop.disabled {
@@ -4033,7 +4033,7 @@ input[type="range"]::-moz-range-thumb {
 
 /* Keyboard focus lands on the hidden input, so show it on the label. */
 .upload-input:focus-visible + .upload-label {
-  outline: 2px solid rgba(120, 150, 255, 0.8);
+  outline: 2px solid var(--accent);
   outline-offset: 6px;
   border-radius: 6px;
 }
@@ -4046,7 +4046,7 @@ input[type="range"]::-moz-range-thumb {
 
 .upload-filesize {
   font-size: 0.82rem;
-  color: var(--text-muted, #93a2bd);
+  color: var(--text-muted);
 }
 
 .upload-progress {
@@ -4058,20 +4058,20 @@ input[type="range"]::-moz-range-thumb {
 .upload-progress-track {
   height: 7px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.09);
+  background: var(--surface-3);
   overflow: hidden;
 }
 
 .upload-progress-fill {
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, #6f8cff, #9d7bff);
+  background: var(--accent);
   transition: width 0.2s ease;
 }
 
 .upload-progress-label {
   font-size: 0.84rem;
-  color: var(--text-muted, #93a2bd);
+  color: var(--text-muted);
 }
 
 .upload-actions {
@@ -4095,7 +4095,7 @@ input[type="range"]::-moz-range-thumb {
   flex-direction: column;
   gap: 12px;
   padding-top: 16px;
-  border-top: 1px solid var(--border, rgba(255, 255, 255, 0.09));
+  border-top: 1px solid var(--border);
 }
 
 .schedule-choices {
@@ -4109,24 +4109,24 @@ input[type="range"]::-moz-range-thumb {
   gap: 10px;
   align-items: flex-start;
   padding: 12px 14px;
-  border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+  border: 1px solid var(--border);
   border-radius: 12px;
   cursor: pointer;
   transition: border-color 0.15s ease, background 0.15s ease;
 }
 
 .schedule-choice:hover {
-  border-color: rgba(120, 150, 255, 0.4);
+  border-color: var(--border-strong);
 }
 
 .schedule-choice.selected {
-  border-color: rgba(120, 150, 255, 0.65);
-  background: rgba(120, 150, 255, 0.08);
+  border-color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .schedule-choice input {
   margin-top: 3px;
-  accent-color: #7d96ff;
+  accent-color: var(--accent);
   flex: 0 0 auto;
 }
 
@@ -4144,7 +4144,7 @@ input[type="range"]::-moz-range-thumb {
 .schedule-choice-help {
   font-size: 0.82rem;
   line-height: 1.45;
-  color: var(--text-muted, #93a2bd);
+  color: var(--text-muted);
 }
 
 .schedule-interval {
@@ -4158,8 +4158,8 @@ input[type="range"]::-moz-range-thumb {
 .schedule-interval select {
   padding: 7px 11px;
   border-radius: 9px;
-  border: 1px solid var(--border, rgba(255, 255, 255, 0.14));
-  background: var(--surface-2, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--border);
+  background: var(--surface-2);
   color: inherit;
   font: inherit;
   font-size: 0.88rem;
@@ -4175,9 +4175,9 @@ input[type="range"]::-moz-range-thumb {
   gap: 4px;
   margin: 0 0 22px;
   padding: 4px;
-  border: 1px solid var(--border, rgba(255, 255, 255, 0.09));
+  border: 1px solid var(--border);
   border-radius: 12px;
-  background: var(--surface-2, rgba(255, 255, 255, 0.03));
+  background: var(--surface-2);
   /* Narrow screens scroll the tabs rather than wrapping them into rows. */
   overflow-x: auto;
   scrollbar-width: none;
@@ -4193,28 +4193,51 @@ input[type="range"]::-moz-range-thumb {
   border-radius: 9px;
   font-size: 0.9rem;
   font-weight: 600;
-  color: var(--text-muted, #93a2bd);
+  color: var(--text-muted);
   text-decoration: none;
   white-space: nowrap;
   transition: color 0.15s ease, background 0.15s ease;
 }
 
 .section-nav-link:hover {
-  color: inherit;
-  background: rgba(255, 255, 255, 0.05);
+  color: var(--text);
+  background: var(--surface-3);
 }
 
 .section-nav-link.active {
-  color: #fff;
-  background: rgba(120, 150, 255, 0.22);
+  color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .section-nav-link:focus-visible {
-  outline: 2px solid rgba(120, 150, 255, 0.8);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
 /* One card per section now, so the two-column split has nothing to split. */
 .automation-columns {
   display: block;
+}
+
+/* Brand tints for connected destinations. The badge shows initials rather
+   than a logo, so colour is what makes a platform recognisable at a glance. */
+.destination-badge.platform-tiktok { background: rgba(0, 0, 0, 0.10); color: #111; }
+:root[data-theme="dark"] .destination-badge.platform-tiktok,
+:root:not([data-theme="light"]) .destination-badge.platform-tiktok {
+  background: rgba(37, 244, 238, 0.16);
+  color: #25f4ee;
+}
+.destination-badge.platform-instagram { background: rgba(214, 41, 118, 0.16); color: #e1306c; }
+.destination-badge.platform-facebook { background: rgba(24, 119, 242, 0.16); color: #1877f2; }
+.destination-badge.platform-twitter { background: rgba(120, 132, 150, 0.18); color: var(--text); }
+.destination-badge.platform-linkedin { background: rgba(10, 102, 194, 0.16); color: #0a66c2; }
+.destination-badge.platform-threads { background: rgba(120, 132, 150, 0.18); color: var(--text); }
+.destination-badge.platform-bluesky { background: rgba(0, 133, 255, 0.16); color: #0085ff; }
+.destination-badge.platform-pinterest { background: rgba(230, 0, 35, 0.16); color: #e60023; }
+.destination-badge.platform-youtube { background: rgba(255, 0, 0, 0.14); color: #ff3b3b; }
+
+/* The heading and the drop zone sat on different axes inside one card. */
+.upload-head,
+.destinations-head {
+  text-align: left;
 }
