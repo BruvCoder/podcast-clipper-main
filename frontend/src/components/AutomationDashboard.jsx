@@ -5,6 +5,7 @@ import {
 } from "../sourceChannelDraft.js";
 import { isValidYouTubeChannelUrl, normalizeYouTubeChannelUrl } from "../youtube.js";
 import YouTubeIcon from "./YouTubeIcon.jsx";
+import { APP_SECTIONS, navigate } from "../router.js";
 import Destinations from "./Destinations.jsx";
 import UploadPanel from "./UploadPanel.jsx";
 
@@ -118,7 +119,33 @@ function ChannelAvatar({ channel, type }) {
   return <YouTubeIcon className={type === "clips" ? "youtube-clips-mark" : "youtube-main-mark"} />;
 }
 
+// One heading per section, so the page says what you are looking at rather
+// than "Ravi overview" on every tab.
+const SECTION_COPY = {
+  overview: {
+    title: "Channels",
+    lede: "Ravi watches your main channel and posts the clips it makes.",
+  },
+  destinations: {
+    title: "Destinations",
+    lede: "Every clip is posted to each connected account.",
+  },
+  upload: {
+    title: "Upload",
+    lede: "Send Ravi a video directly instead of waiting for your channel.",
+  },
+  settings: {
+    title: "Settings",
+    lede: "How many clips Ravi makes, how long they are, and how they look.",
+  },
+  activity: {
+    title: "Activity",
+    lede: "What Ravi has picked up and posted recently.",
+  },
+};
+
 export default function AutomationDashboard({
+  section = "overview",
   automation,
   loading,
   error,
@@ -232,19 +259,40 @@ export default function AutomationDashboard({
     <div className="automation-page">
       <div className="automation-heading">
         <div>
-          <h1>Ravi overview</h1>
-          <p>Ravi watches your main channel and posts the most viral-ready moments to your clips channel.</p>
+          <h1>{SECTION_COPY[section]?.title || "Ravi"}</h1>
+          <p>{SECTION_COPY[section]?.lede}</p>
         </div>
         <span className={`automation-status ${status.tone}`}>
           <i aria-hidden="true" /> {status.label}
         </span>
       </div>
 
+      <nav className="section-nav" aria-label="Ravi sections">
+        {APP_SECTIONS.map((entry) => (
+          <a
+            key={entry.name}
+            href={entry.path}
+            className={`section-nav-link ${entry.name === section ? "active" : ""}`}
+            aria-current={entry.name === section ? "page" : undefined}
+            onClick={(event) => {
+              // A real href keeps middle-click and "open in new tab" working;
+              // this only intercepts the ordinary left click.
+              if (event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
+              event.preventDefault();
+              navigate(entry.path);
+            }}
+          >
+            {entry.label}
+          </a>
+        ))}
+      </nav>
+
       {notice && <div className="automation-alert success" role="status">{notice}</div>}
       {(error || automation?.lastError) && (
         <div className="automation-alert error" role="alert">{error || automation.lastError}</div>
       )}
 
+      {section === "overview" && (
       <section className="automation-card channel-map" aria-labelledby="channel-map-title">
         <div className="automation-card-head">
           <div>
@@ -395,7 +443,9 @@ export default function AutomationDashboard({
             : "Add your main channel and connect a different clips channel. Ravi starts with the next public upload after you turn watching on; existing videos are not backfilled."}
         </p>
       </section>
+      )}
 
+      {section === "destinations" && (
       <Destinations
         automation={automation}
         action={action}
@@ -403,13 +453,17 @@ export default function AutomationDashboard({
         onDisconnectDestination={onDisconnectDestination}
         onScheduleChange={onScheduleChange}
       />
+      )}
 
+      {section === "upload" && (
       <UploadPanel
         onUpload={onUpload}
         disabled={!sourceReady && !clipsReady}
         disabledReason="Connect a clips channel or another destination first, so Ravi has somewhere to post."
       />
+      )}
 
+      {section === "settings" && (
       <div className="automation-columns">
         <section className="automation-card" aria-labelledby="clip-settings-title">
           <div className="automation-card-head">
@@ -515,7 +569,11 @@ export default function AutomationDashboard({
           </label>
 
         </section>
+      </div>
+      )}
 
+      {section === "overview" && (
+      <div className="automation-columns">
         <section className="automation-card automation-control-card" aria-labelledby="ravi-control-title">
           <div className="automation-card-head">
             <div>
@@ -584,7 +642,9 @@ export default function AutomationDashboard({
           )}
         </section>
       </div>
+      )}
 
+      {section === "activity" && (
       <section className="automation-card activity-card" aria-labelledby="activity-title">
         <div className="automation-card-head">
           <div>
@@ -623,6 +683,7 @@ export default function AutomationDashboard({
           </div>
         )}
       </section>
+      )}
     </div>
   );
 }

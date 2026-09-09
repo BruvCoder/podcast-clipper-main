@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  APP_SECTIONS,
   ROUTES,
   currentRoute,
+  isAppSection,
   navigate,
   parseRoute,
   routePath,
@@ -154,4 +156,32 @@ test("currentRoute reads the live location", () => {
   assert.deepEqual(currentRoute(fakeWindow(`/clips/${JOB_ID}`)), { name: "clip", jobId: JOB_ID });
   // No window at all (SSR, tests) must not throw.
   assert.deepEqual(currentRoute(undefined), { name: "landing" });
+});
+
+test("every app section is a real, round-tripping URL", () => {
+  // Sections are URLs rather than tab state, so each can be linked, reloaded,
+  // and reached with the back button.
+  for (const section of APP_SECTIONS) {
+    const route = parseRoute(section.path);
+    assert.equal(route.name, section.name, `${section.path} did not parse`);
+    assert.equal(routePath(route), section.path);
+    assert.equal(isAppSection(route), true);
+  }
+  assert.deepEqual(
+    APP_SECTIONS.map((section) => section.path),
+    ["/overview", "/destinations", "/upload", "/settings", "/activity"]
+  );
+});
+
+test("only app sections count as sections", () => {
+  assert.equal(isAppSection(parseRoute("/")), false);
+  assert.equal(isAppSection(parseRoute("/signin")), false);
+  assert.equal(isAppSection(parseRoute(`/clips/${JOB_ID}`)), false);
+  assert.equal(isAppSection(parseRoute("/nope")), false);
+  assert.equal(isAppSection(undefined), false);
+});
+
+test("a section reports its own analytics path", () => {
+  assert.equal(routePattern(parseRoute("/destinations")), "/destinations");
+  assert.equal(routePattern(parseRoute("/activity")), "/activity");
 });

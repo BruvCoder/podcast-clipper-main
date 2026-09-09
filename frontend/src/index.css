@@ -4168,3 +4168,53 @@ input[type="range"]::-moz-range-thumb {
 .schedule-interval select:disabled {
   opacity: 0.55;
 }
+
+/* --- Section navigation --- */
+.section-nav {
+  display: flex;
+  gap: 4px;
+  margin: 0 0 22px;
+  padding: 4px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.09));
+  border-radius: 12px;
+  background: var(--surface-2, rgba(255, 255, 255, 0.03));
+  /* Narrow screens scroll the tabs rather than wrapping them into rows. */
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.section-nav::-webkit-scrollbar {
+  display: none;
+}
+
+.section-nav-link {
+  flex: 0 0 auto;
+  padding: 9px 16px;
+  border-radius: 9px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-muted, #93a2bd);
+  text-decoration: none;
+  white-space: nowrap;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.section-nav-link:hover {
+  color: inherit;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.section-nav-link.active {
+  color: #fff;
+  background: rgba(120, 150, 255, 0.22);
+}
+
+.section-nav-link:focus-visible {
+  outline: 2px solid rgba(120, 150, 255, 0.8);
+  outline-offset: 2px;
+}
+
+/* One card per section now, so the two-column split has nothing to split. */
+.automation-columns {
+  display: block;
+}

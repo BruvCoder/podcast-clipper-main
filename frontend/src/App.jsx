@@ -10,6 +10,7 @@ import { trackEvent, trackPageView } from "./analytics.js";
 import {
   ROUTES,
   currentRoute,
+  isAppSection,
   navigate,
   routePattern,
   subscribeToRoute,
@@ -510,9 +511,10 @@ export default function App() {
               <button className="menu-toggle" onClick={() => setSidebarOpen(true)} aria-label="Open menu">☰</button>
             </div>
 
-            <div className={`main-inner ${route.name === "overview" ? "overview" : ""}`}>
-              {route.name === "overview" && (
+            <div className={`main-inner ${isAppSection(route) ? "overview" : ""}`}>
+              {isAppSection(route) && (
                 <AutomationDashboard
+                  section={route.name}
                   automation={automation}
                   loading={automationLoading}
                   error={automationError}

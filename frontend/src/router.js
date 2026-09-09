@@ -16,7 +16,29 @@ export const ROUTES = Object.freeze({
   landing: "/",
   signin: "/signin",
   overview: "/overview",
+  destinations: "/destinations",
+  upload: "/upload",
+  settings: "/settings",
+  activity: "/activity",
 });
+
+// The signed-in sections, in the order the navigation shows them. Each is a
+// real URL rather than a tab held in state, so a section can be linked,
+// reloaded, and reached with the back button.
+export const APP_SECTIONS = Object.freeze([
+  { name: "overview", path: ROUTES.overview, label: "Channels" },
+  { name: "destinations", path: ROUTES.destinations, label: "Destinations" },
+  { name: "upload", path: ROUTES.upload, label: "Upload" },
+  { name: "settings", path: ROUTES.settings, label: "Settings" },
+  { name: "activity", path: ROUTES.activity, label: "Activity" },
+]);
+
+const APP_SECTION_NAMES = new Set(APP_SECTIONS.map((section) => section.name));
+
+/** True for a section of the signed-in app, as opposed to a clip or landing. */
+export function isAppSection(route) {
+  return APP_SECTION_NAMES.has(route?.name);
+}
 
 export function parseRoute(pathname) {
   // Trailing slashes are equivalent, but "/" itself must survive the trim.
@@ -24,7 +46,9 @@ export function parseRoute(pathname) {
 
   if (path === ROUTES.landing) return { name: "landing" };
   if (path === ROUTES.signin) return { name: "signin" };
-  if (path === ROUTES.overview) return { name: "overview" };
+
+  const section = APP_SECTIONS.find((entry) => entry.path === path);
+  if (section) return { name: section.name };
 
   const clip = /^\/clips\/([^/]+)$/.exec(path);
   if (clip) {
@@ -45,8 +69,9 @@ export function parseRoute(pathname) {
 /** The URL a route should occupy. */
 export function routePath(route) {
   if (route?.name === "signin") return ROUTES.signin;
-  if (route?.name === "overview") return ROUTES.overview;
   if (route?.name === "clip" && route.jobId) return `/clips/${encodeURIComponent(route.jobId)}`;
+  const section = APP_SECTIONS.find((entry) => entry.name === route?.name);
+  if (section) return section.path;
   return ROUTES.landing;
 }
 
