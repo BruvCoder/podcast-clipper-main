@@ -135,6 +135,10 @@ app.get("/api/health", (req, res) => {
     branch: process.env.RAILWAY_GIT_BRANCH || "unknown",
     billing: billing.config.state,
     youtubeAutomation: youtubeAutomationConfig.configured ? "configured" : "setup_required",
+    // Reported separately from the integration as a whole: without it only
+    // upload detection stops, and that failure is otherwise invisible until a
+    // user notices their channel is never picked up.
+    uploadDetection: youtubeAutomationConfig.youtubeApiKey ? "youtube-data-api" : "missing_api_key",
     channelConnection: "public-source+zernio-clips",
     downloader: runtimeReadiness.ytDlp.ok ? "yt-dlp" : "unavailable",
     downloaderVersion: runtimeReadiness.ytDlp.version,

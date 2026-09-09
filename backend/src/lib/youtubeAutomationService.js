@@ -2,7 +2,7 @@ import path from "node:path";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { createZernioApi, ZernioApiError } from "./zernioApi.js";
 import { resolveYoutubeChannel } from "./ytdlp.js";
-import { fetchYoutubeChannelFeed } from "./youtubeChannelFeed.js";
+import { fetchChannelUploads } from "./youtubeDataApi.js";
 import { PLATFORMS, isSupportedPlatform, listPlatforms } from "./socialPlatforms.js";
 
 const DEFAULT_SETTINGS = Object.freeze({
@@ -78,9 +78,18 @@ export function loadYoutubeAutomationConfig(env = process.env, { stateDir } = {}
     callbackUrl,
     stateDir,
     zernioBaseUrl: String(env.ZERNIO_BASE_URL || "").trim() || undefined,
+    // Deliberately not in `required`: without it only upload detection stops,
+    // while connecting destinations and uploading a file still work, so
+    // failing the whole integration closed would take away more than is broken.
+    youtubeApiKey: String(env.YOUTUBE_API_KEY || "").trim(),
     requestTimeoutMs: boundedInteger(env.ZERNIO_REQUEST_TIMEOUT_MS, 20_000, 1_000, 120_000),
     uploadTimeoutMs: boundedInteger(env.ZERNIO_UPLOAD_TIMEOUT_MS, 900_000, 10_000, 3_600_000),
-    pollIntervalMs: boundedInteger(env.YOUTUBE_WATCH_POLL_MS, 60_000, 60_000, 3_600_000),
+    // Five minutes rather than one. Every poll now spends a YouTube API quota
+    // unit from a shared daily budget of 10,000, so a one-minute interval
+    // costs 1,440 per watching user per day and would exhaust the quota at
+    // about six users. At five minutes the same budget covers roughly thirty,
+    // and detection is late by minutes on a job that takes minutes anyway.
+    pollIntervalMs: boundedInteger(env.YOUTUBE_WATCH_POLL_MS, 300_000, 60_000, 3_600_000),
     oauthStateTtlMs: boundedInteger(env.YOUTUBE_OAUTH_STATE_TTL_MS, 600_000, 60_000, 900_000),
     cookieSecure: /^https:/i.test(publicApiUrl),
   };
@@ -527,8 +536,11 @@ export function createYoutubeAutomationService({
         fetchImpl,
       })
     : null);
+  // The Atom feed at /feeds/videos.xml was retired by YouTube and now returns
+  // 404 for every channel, so detection goes through the Data API instead.
   const readSourceFeed = fetchSourceFeed || ((channel) =>
-    fetchYoutubeChannelFeed(channel.id, {
+    fetchChannelUploads(channel.id, {
+      apiKey: config.youtubeApiKey,
       fetchImpl,
       timeoutMs: config.requestTimeoutMs,
     }));
